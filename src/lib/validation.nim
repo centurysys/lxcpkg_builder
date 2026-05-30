@@ -22,6 +22,24 @@ const
     "0775"
   ]
 
+  deniedExactVarTargets = [
+    "/var"
+  ]
+
+  deniedVarSubtrees = [
+    "/var/backups",
+    "/var/cache",
+    "/var/lib",
+    "/var/local",
+    "/var/lock",
+    "/var/log",
+    "/var/mail",
+    "/var/opt",
+    "/var/run",
+    "/var/spool",
+    "/var/tmp"
+  ]
+
 proc isNameChar(c: char): bool =
   result = c.isAlphaNumeric or c == '_' or c == '.' or c == '-'
 
@@ -50,6 +68,32 @@ proc pathHasDotDot(path: string): bool =
 
   result = false
 
+proc isDeniedVarTarget(target: string): bool =
+  for denied in deniedExactVarTargets:
+    if target == denied:
+      return true
+
+  for denied in deniedVarSubtrees:
+    if target == denied or target.startsWith(denied & "/"):
+      return true
+
+  result = false
+
+proc isAllowedDataMountTarget(target: string): bool =
+  if target.startsWith("/opt/"):
+    return true
+
+  if target.startsWith("/home/"):
+    return true
+
+  if target.startsWith("/var/lib/"):
+    return true
+
+  if target.startsWith("/var/") and not isDeniedVarTarget(target):
+    return true
+
+  result = false
+
 proc validateDataMountTarget*(target: string): LxResult[void] =
   if target.len == 0:
     return LxResult[void].err(invalidDataMount("data mount target must not be empty"))
@@ -72,16 +116,19 @@ proc validateDataMountTarget*(target: string): LxResult[void] =
       invalidDataMount("data mount target must not contain '..'", target)
     )
 
-  let allowed =
-    target.startsWith("/opt/") or
-    target.startsWith("/var/lib/") or
-    target.startsWith("/home/")
+  if isDeniedVarTarget(target):
+    return LxResult[void].err(
+      invalidDataMount(
+        "data mount target is reserved by the base system",
+        target
+      )
+    )
 
-  if not allowed:
+  if not isAllowedDataMountTarget(target):
     return LxResult[void].err(
       invalidDataMount(
         "data mount target is outside allowed directories",
-        "allowed prefixes: /opt/, /var/lib/, /home/"
+        "allowed prefixes: /opt/, /var/lib/, /var/<app>, /home/"
       )
     )
 
@@ -197,6 +244,7 @@ when isMainModule:
     echo ""
     echo "Examples:"
     echo &"  {prog} ./rootfs appdata:/var/lib/testapp:user1:user1:0775"
+    echo &"  {prog} ./rootfs synapse:/var/speedbeesynapse:user1:user1:0775"
     echo &"  {prog} ./rootfs work:/opt/testapp-data:0:0:0755"
 
   var rootfs = ""

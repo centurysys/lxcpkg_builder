@@ -13,6 +13,7 @@ import accounts
 import archive
 import errors
 import manifest
+import prompts
 import rootfs
 import squashfs
 import types
@@ -52,20 +53,24 @@ proc formatDataMounts(value: seq[DataMount]): string =
 
   result = parts.join(", ")
 
-proc requireOption(opts: RawBuildOptions; value: Option[string]; name: string): LxResult[string] =
-  if value.isNone or value.get().len == 0:
-    return LxResult[string].err(missingArgument(name))
-
-  result = LxResult[string].ok(value.get())
-
 proc rootfsValue(opts: RawBuildOptions): LxResult[string] =
-  result = requireOption(opts, opts.rootfs, "--rootfs")
+  if opts.rootfs.isSome and opts.rootfs.get().len > 0:
+    return LxResult[string].ok(opts.rootfs.get())
 
-proc outputValue(opts: RawBuildOptions): LxResult[string] =
-  result = requireOption(opts, opts.output, "--output")
+  if opts.nonInteractive:
+    return LxResult[string].err(missingArgument("--rootfs"))
+
+  result = promptRequiredString("Rootfs directory", "./rootfs")
 
 proc nameValue(opts: RawBuildOptions): LxResult[string] =
-  let name = requireOption(opts, opts.name, "--name")
+  let name =
+    if opts.name.isSome and opts.name.get().len > 0:
+      LxResult[string].ok(opts.name.get())
+    elif opts.nonInteractive:
+      LxResult[string].err(missingArgument("--name"))
+    else:
+      promptRequiredString("Package name")
+
   if name.isErr:
     return name
 
@@ -75,17 +80,32 @@ proc nameValue(opts: RawBuildOptions): LxResult[string] =
 
   result = name
 
+proc packageIdValue(opts: RawBuildOptions; name: string): string =
+  let defaultId = defaultPackageId(name)
+
+  if opts.packageId.isSome and opts.packageId.get().len > 0:
+    result = opts.packageId.get()
+  elif opts.nonInteractive:
+    result = defaultId
+  else:
+    result = promptString("Package ID", defaultId)
+
 proc versionValue(opts: RawBuildOptions): string =
   if opts.version.isSome and opts.version.get().len > 0:
     result = opts.version.get()
-  else:
+  elif opts.nonInteractive:
     result = defaultVersion
-
-proc packageIdValue(opts: RawBuildOptions; name: string): string =
-  if opts.packageId.isSome and opts.packageId.get().len > 0:
-    result = opts.packageId.get()
   else:
-    result = defaultPackageId(name)
+    result = promptString("Package version", defaultVersion)
+
+proc outputValue(opts: RawBuildOptions; name: string): LxResult[string] =
+  if opts.output.isSome and opts.output.get().len > 0:
+    return LxResult[string].ok(opts.output.get())
+
+  if opts.nonInteractive:
+    return LxResult[string].err(missingArgument("--output"))
+
+  result = promptRequiredString("Output .lxcpkg file", &"{name}.lxcpkg")
 
 proc specifiedArchValue(opts: RawBuildOptions): string =
   if opts.arch.isSome:
@@ -115,9 +135,12 @@ proc parseRootfsMode(text: string): LxResult[RootfsMode] =
 
 proc rootfsModeValue(opts: RawBuildOptions): LxResult[RootfsMode] =
   if opts.rootfsMode.isSome:
-    result = parseRootfsMode(opts.rootfsMode.get())
-  else:
-    result = LxResult[RootfsMode].ok(defaultRootfsMode)
+    return parseRootfsMode(opts.rootfsMode.get())
+
+  if opts.nonInteractive:
+    return LxResult[RootfsMode].ok(defaultRootfsMode)
+
+  result = LxResult[RootfsMode].ok(promptRootfsMode(defaultRootfsMode))
 
 proc parseCompression(text: string): LxResult[Compression] =
   let value = text.strip()
@@ -155,14 +178,19 @@ proc blockSizeValue(opts: RawBuildOptions): string =
   else:
     result = defaultBlockSize
 
+proc dataMountSpecsValue(opts: RawBuildOptions; rootfsAccounts: RootfsAccounts): seq[string] =
+  if opts.data.len > 0:
+    return opts.data
+
+  if opts.nonInteractive:
+    return @[]
+
+  result = promptDataMountSpecs(rootfsAccounts)
+
 proc resolveBuildOptions*(opts: RawBuildOptions): LxResult[BuildOptions] =
   let rootfsDirResult = rootfsValue(opts)
   if rootfsDirResult.isErr:
     return LxResult[BuildOptions].err(rootfsDirResult.error())
-
-  let outputResult = outputValue(opts)
-  if outputResult.isErr:
-    return LxResult[BuildOptions].err(outputResult.error())
 
   let nameResult = nameValue(opts)
   if nameResult.isErr:
@@ -170,6 +198,18 @@ proc resolveBuildOptions*(opts: RawBuildOptions): LxResult[BuildOptions] =
 
   let rootfsDir = rootfsDirResult.get()
   let name = nameResult.get()
+
+  # Keep metadata prompts together before runtime/data-mount prompts.
+  let packageId = packageIdValue(opts, name)
+  let version = versionValue(opts)
+
+  let outputResult = outputValue(opts, name)
+  if outputResult.isErr:
+    return LxResult[BuildOptions].err(outputResult.error())
+
+  let rootfsModeResult = rootfsModeValue(opts)
+  if rootfsModeResult.isErr:
+    return LxResult[BuildOptions].err(rootfsModeResult.error())
 
   let archResult = resolveArchitecture(rootfsDir, specifiedArchValue(opts))
   if archResult.isErr:
@@ -179,13 +219,10 @@ proc resolveBuildOptions*(opts: RawBuildOptions): LxResult[BuildOptions] =
   if loadedAccounts.isErr:
     return LxResult[BuildOptions].err(loadedAccounts.error())
 
-  let dataMountsResult = parseDataMountSpecs(opts.data, loadedAccounts.get())
+  let dataSpecs = dataMountSpecsValue(opts, loadedAccounts.get())
+  let dataMountsResult = parseDataMountSpecs(dataSpecs, loadedAccounts.get())
   if dataMountsResult.isErr:
     return LxResult[BuildOptions].err(dataMountsResult.error())
-
-  let rootfsModeResult = rootfsModeValue(opts)
-  if rootfsModeResult.isErr:
-    return LxResult[BuildOptions].err(rootfsModeResult.error())
 
   let compressionResult = compressionValue(opts)
   if compressionResult.isErr:
@@ -194,9 +231,9 @@ proc resolveBuildOptions*(opts: RawBuildOptions): LxResult[BuildOptions] =
   result = LxResult[BuildOptions].ok(BuildOptions(
     rootfsDir: rootfsDir,
     outputFile: outputResult.get(),
-    packageId: packageIdValue(opts, name),
+    packageId: packageId,
     name: name,
-    version: versionValue(opts),
+    version: version,
     arch: archResult.get(),
     rootfsMode: rootfsModeResult.get(),
     dataMounts: dataMountsResult.get(),
