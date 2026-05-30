@@ -80,6 +80,15 @@ proc nameValue(opts: RawBuildOptions): LxResult[string] =
 
   result = name
 
+proc outputValue(opts: RawBuildOptions; name: string): LxResult[string] =
+  if opts.output.isSome and opts.output.get().len > 0:
+    return LxResult[string].ok(opts.output.get())
+
+  if opts.nonInteractive:
+    return LxResult[string].err(missingArgument("--output"))
+
+  result = promptRequiredString("Output .lxcpkg file", &"{name}.lxcpkg")
+
 proc packageIdValue(opts: RawBuildOptions; name: string): string =
   let defaultId = defaultPackageId(name)
 
@@ -97,15 +106,6 @@ proc versionValue(opts: RawBuildOptions): string =
     result = defaultVersion
   else:
     result = promptString("Package version", defaultVersion)
-
-proc outputValue(opts: RawBuildOptions; name: string): LxResult[string] =
-  if opts.output.isSome and opts.output.get().len > 0:
-    return LxResult[string].ok(opts.output.get())
-
-  if opts.nonInteractive:
-    return LxResult[string].err(missingArgument("--output"))
-
-  result = promptRequiredString("Output .lxcpkg file", &"{name}.lxcpkg")
 
 proc specifiedArchValue(opts: RawBuildOptions): string =
   if opts.arch.isSome:
@@ -199,13 +199,19 @@ proc resolveBuildOptions*(opts: RawBuildOptions): LxResult[BuildOptions] =
   let rootfsDir = rootfsDirResult.get()
   let name = nameResult.get()
 
-  # Keep metadata prompts together before runtime/data-mount prompts.
-  let packageId = packageIdValue(opts, name)
-  let version = versionValue(opts)
-
+  # Resolve and check output as soon as the output file name is known. This
+  # avoids asking additional interactive questions or creating squashfs when
+  # the requested archive already exists.
   let outputResult = outputValue(opts, name)
   if outputResult.isErr:
     return LxResult[BuildOptions].err(outputResult.error())
+
+  let outputCheck = checkArchiveOutput(outputResult.get(), opts.force)
+  if outputCheck.isErr:
+    return LxResult[BuildOptions].err(outputCheck.error())
+
+  let packageId = packageIdValue(opts, name)
+  let version = versionValue(opts)
 
   let rootfsModeResult = rootfsModeValue(opts)
   if rootfsModeResult.isErr:
@@ -373,6 +379,10 @@ proc buildPackageSteps(buildOpts: BuildOptions; buildDir: string): LxResult[void
   result = LxResult[void].ok()
 
 proc buildPackage(buildOpts: BuildOptions): LxResult[void] =
+  let outputCheck = checkArchiveOutput(buildOpts.outputFile, buildOpts.force)
+  if outputCheck.isErr:
+    return outputCheck
+
   let buildDirResult = createBuildDir()
   if buildDirResult.isErr:
     return LxResult[void].err(buildDirResult.error())

@@ -71,9 +71,20 @@ proc runCommand(command: string; args: seq[string]; workingDir: string; verbose:
 
   result = LxResult[void].ok()
 
-proc createArchive*(opts: ArchiveOptions): LxResult[void] =
-  if opts.outputFile.len == 0:
+proc checkArchiveOutput*(outputFile: string; force: bool): LxResult[void] =
+  if outputFile.len == 0:
     return LxResult[void].err(missingArgument("--output"))
+
+  let outputPath = absolutePath(outputFile)
+  if fileExists(outputPath) and not force:
+    return LxResult[void].err(outputExists(outputPath))
+
+  result = LxResult[void].ok()
+
+proc createArchive*(opts: ArchiveOptions): LxResult[void] =
+  let outputCheck = checkArchiveOutput(opts.outputFile, opts.force)
+  if outputCheck.isErr:
+    return outputCheck
 
   if not fileExists(opts.manifestFile):
     return LxResult[void].err(ioError("manifest file does not exist", opts.manifestFile))
@@ -82,9 +93,6 @@ proc createArchive*(opts: ArchiveOptions): LxResult[void] =
     return LxResult[void].err(ioError("rootfs image file does not exist", opts.imageFile))
 
   let outputPath = absolutePath(opts.outputFile)
-  if fileExists(outputPath) and not opts.force:
-    return LxResult[void].err(outputExists(outputPath))
-
   if fileExists(outputPath) and opts.force:
     try:
       removeFile(outputPath)
