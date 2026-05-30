@@ -126,6 +126,19 @@ type
     force*: bool
     verbose*: bool
 
+  RebuildInputPaths* = object
+    ## Paths produced after extracting and validating a base .lxcpkg and a
+    ## .lxcdev development archive. These paths are intentionally explicit so
+    ## the later rebuild step can mount/apply them without re-discovering files.
+    baseDir*: string
+    devDir*: string
+    baseManifestPath*: string
+    baseImagePath*: string
+    devManifestPath*: string
+    snapshotPath*: string
+    packageManifest*: PackageManifest
+    devManifest*: DevArchiveManifest
+
 const
   defaultVersion* = "1.0.0"
   defaultRootfsMode* = rmVolatile

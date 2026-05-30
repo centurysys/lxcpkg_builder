@@ -6,8 +6,6 @@
 
 import std/json
 import std/os
-import std/strformat
-
 import results
 
 import errors
