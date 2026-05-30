@@ -1,17 +1,20 @@
-# Manifest generation and SHA256 helpers.
+# Manifest generation, parsing, and SHA256 helpers.
 
 import std/json
 import std/os
+import std/strformat
 
 when isMainModule:
   import std/parseopt
-  import std/strformat
 
 import results
 import checksums/sha2
 
 import errors
 import types
+
+proc invalidManifest(message: string; detail = ""): LxError =
+  result = newError(ekInvalidManifest, message, detail)
 
 proc sha256File*(path: string): LxResult[string] =
   if not fileExists(path):
@@ -40,6 +43,100 @@ proc sha256File*(path: string): LxResult[string] =
     result = LxResult[string].err(ioError("failed to calculate SHA256", e.msg))
   except OSError as e:
     result = LxResult[string].err(ioError("failed to calculate SHA256", e.msg))
+
+proc parseArchitecture(text: string): LxResult[Architecture] =
+  case text
+  of "armhf":
+    result = LxResult[Architecture].ok(archArmhf)
+  of "aarch64":
+    result = LxResult[Architecture].ok(archAarch64)
+  else:
+    result = LxResult[Architecture].err(invalidManifest("invalid architecture", text))
+
+proc parseRootfsMode(text: string): LxResult[RootfsMode] =
+  case text
+  of "persistent":
+    result = LxResult[RootfsMode].ok(rmPersistent)
+  of "volatile":
+    result = LxResult[RootfsMode].ok(rmVolatile)
+  of "snapshot":
+    result = LxResult[RootfsMode].ok(rmSnapshot)
+  else:
+    result = LxResult[RootfsMode].err(invalidManifest("invalid rootfs mode", text))
+
+proc requireObject(node: JsonNode; key: string): LxResult[JsonNode] =
+  if not node.hasKey(key):
+    return LxResult[JsonNode].err(invalidManifest("missing required object", key))
+
+  let child = node[key]
+  if child.kind != JObject:
+    return LxResult[JsonNode].err(invalidManifest("invalid object", key))
+
+  result = LxResult[JsonNode].ok(child)
+
+proc requireString(node: JsonNode; key: string): LxResult[string] =
+  if not node.hasKey(key):
+    return LxResult[string].err(invalidManifest("missing required string", key))
+
+  let child = node[key]
+  if child.kind != JString:
+    return LxResult[string].err(invalidManifest("invalid string", key))
+
+  result = LxResult[string].ok(child.getStr())
+
+proc requireInt(node: JsonNode; key: string): LxResult[int] =
+  if not node.hasKey(key):
+    return LxResult[int].err(invalidManifest("missing required integer", key))
+
+  let child = node[key]
+  if child.kind != JInt:
+    return LxResult[int].err(invalidManifest("invalid integer", key))
+
+  result = LxResult[int].ok(child.getInt())
+
+proc optionalDataMounts(node: JsonNode): LxResult[seq[DataMount]] =
+  var mounts: seq[DataMount] = @[]
+
+  if not node.hasKey("dataMounts"):
+    return LxResult[seq[DataMount]].ok(mounts)
+
+  let dataMounts = node["dataMounts"]
+  if dataMounts.kind != JArray:
+    return LxResult[seq[DataMount]].err(invalidManifest("invalid dataMounts", "expected array"))
+
+  for index, item in dataMounts:
+    if item.kind != JObject:
+      return LxResult[seq[DataMount]].err(invalidManifest("invalid dataMounts entry", &"index={index}"))
+
+    let name = requireString(item, "name")
+    if name.isErr:
+      return LxResult[seq[DataMount]].err(name.error())
+
+    let target = requireString(item, "target")
+    if target.isErr:
+      return LxResult[seq[DataMount]].err(target.error())
+
+    let uid = requireInt(item, "uid")
+    if uid.isErr:
+      return LxResult[seq[DataMount]].err(uid.error())
+
+    let gid = requireInt(item, "gid")
+    if gid.isErr:
+      return LxResult[seq[DataMount]].err(gid.error())
+
+    let mode = requireString(item, "mode")
+    if mode.isErr:
+      return LxResult[seq[DataMount]].err(mode.error())
+
+    mounts.add(DataMount(
+      name: name.get(),
+      target: target.get(),
+      uid: uid.get(),
+      gid: gid.get(),
+      mode: mode.get()
+    ))
+
+  result = LxResult[seq[DataMount]].ok(mounts)
 
 proc dataMountToJson(mount: DataMount): JsonNode =
   result = %*{
@@ -83,6 +180,83 @@ proc makeManifest*(buildOpts: BuildOptions; imageSha256: string): PackageManifes
     ),
     dataMounts: buildOpts.dataMounts
   )
+
+proc manifestFromJson*(node: JsonNode): LxResult[PackageManifest] =
+  if node.kind != JObject:
+    return LxResult[PackageManifest].err(invalidManifest("invalid manifest", "expected object"))
+
+  let packageId = requireString(node, "packageId")
+  if packageId.isErr:
+    return LxResult[PackageManifest].err(packageId.error())
+
+  let name = requireString(node, "name")
+  if name.isErr:
+    return LxResult[PackageManifest].err(name.error())
+
+  let version = requireString(node, "version")
+  if version.isErr:
+    return LxResult[PackageManifest].err(version.error())
+
+  let archText = requireString(node, "arch")
+  if archText.isErr:
+    return LxResult[PackageManifest].err(archText.error())
+
+  let arch = parseArchitecture(archText.get())
+  if arch.isErr:
+    return LxResult[PackageManifest].err(arch.error())
+
+  let rootfsModeText = requireString(node, "rootfsMode")
+  if rootfsModeText.isErr:
+    return LxResult[PackageManifest].err(rootfsModeText.error())
+
+  let rootfsMode = parseRootfsMode(rootfsModeText.get())
+  if rootfsMode.isErr:
+    return LxResult[PackageManifest].err(rootfsMode.error())
+
+  let image = requireObject(node, "image")
+  if image.isErr:
+    return LxResult[PackageManifest].err(image.error())
+
+  let imageFile = requireString(image.get(), "file")
+  if imageFile.isErr:
+    return LxResult[PackageManifest].err(imageFile.error())
+
+  let imageSha256 = requireString(image.get(), "sha256")
+  if imageSha256.isErr:
+    return LxResult[PackageManifest].err(imageSha256.error())
+
+  let dataMounts = optionalDataMounts(node)
+  if dataMounts.isErr:
+    return LxResult[PackageManifest].err(dataMounts.error())
+
+  result = LxResult[PackageManifest].ok(PackageManifest(
+    packageId: packageId.get(),
+    name: name.get(),
+    version: version.get(),
+    arch: arch.get(),
+    rootfsMode: rootfsMode.get(),
+    image: ImageInfo(
+      file: imageFile.get(),
+      sha256: imageSha256.get()
+    ),
+    dataMounts: dataMounts.get()
+  ))
+
+proc readManifest*(path: string): LxResult[PackageManifest] =
+  if not fileExists(path):
+    return LxResult[PackageManifest].err(ioError("manifest file does not exist", path))
+
+  let node =
+    try:
+      parseFile(path)
+    except JsonParsingError as e:
+      return LxResult[PackageManifest].err(invalidManifest("failed to parse manifest.json", e.msg))
+    except IOError as e:
+      return LxResult[PackageManifest].err(ioError("failed to read manifest.json", e.msg))
+    except OSError as e:
+      return LxResult[PackageManifest].err(ioError("failed to read manifest.json", e.msg))
+
+  result = manifestFromJson(node)
 
 proc writeManifest*(manifest: PackageManifest; path: string): LxResult[void] =
   try:
