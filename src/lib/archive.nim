@@ -81,6 +81,32 @@ proc checkArchiveOutput*(outputFile: string; force: bool): LxResult[void] =
 
   result = LxResult[void].ok()
 
+
+proc extractZipArchive*(archiveFile, outputDir: string; verbose: bool): LxResult[void] =
+  if archiveFile.len == 0:
+    return LxResult[void].err(missingArgument("archive file"))
+
+  if not fileExists(archiveFile):
+    return LxResult[void].err(ioError("archive file does not exist", archiveFile))
+
+  try:
+    createDir(outputDir)
+  except OSError as e:
+    return LxResult[void].err(ioError("failed to create archive extraction directory", e.msg))
+
+  let tool = findTool("unzip")
+  if tool.isErr:
+    return LxResult[void].err(tool.error())
+
+  let args = @[
+    "-q",
+    archiveFile,
+    "-d",
+    outputDir
+  ]
+
+  result = runCommand(tool.get(), args, getCurrentDir(), verbose)
+
 proc createArchive*(opts: ArchiveOptions): LxResult[void] =
   let outputCheck = checkArchiveOutput(opts.outputFile, opts.force)
   if outputCheck.isErr:

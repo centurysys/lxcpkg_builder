@@ -39,6 +39,34 @@ type
     file*: string
     sha256*: string
 
+  DevArchiveBaseInfo* = object
+    imageFile*: string
+    imageSha256*: string
+    installedImageFile*: string
+    installedImageSha256*: string
+
+  DevArchiveSnapshotInfo* = object
+    file*: string
+    sha256*: string
+    sizeBytes*: int64
+
+  DevArchiveFilesInfo* = object
+    packageManifest*: string
+    instanceMetadata*: string
+    lxcConfig*: string
+
+  DevArchiveManifest* = object
+    format*: string
+    instanceName*: string
+    packageName*: string
+    version*: string
+    arch*: Architecture
+    rootfsMode*: RootfsMode
+    base*: DevArchiveBaseInfo
+    snapshot*: DevArchiveSnapshotInfo
+    files*: DevArchiveFilesInfo
+    dataMountsIncluded*: bool
+
   PackageManifest* = object
     packageId*: string
     name*: string
@@ -98,6 +126,19 @@ type
     force*: bool
     verbose*: bool
 
+  RebuildInputPaths* = object
+    ## Paths produced after extracting and validating a base .lxcpkg and a
+    ## .lxcdev development archive. These paths are intentionally explicit so
+    ## the later rebuild step can mount/apply them without re-discovering files.
+    baseDir*: string
+    devDir*: string
+    baseManifestPath*: string
+    baseImagePath*: string
+    devManifestPath*: string
+    snapshotPath*: string
+    packageManifest*: PackageManifest
+    devManifest*: DevArchiveManifest
+
 const
   defaultVersion* = "1.0.0"
   defaultRootfsMode* = rmVolatile
@@ -108,6 +149,8 @@ const
   defaultDataMountMode* = "0755"
   rootfsImageFileName* = "rootfs.sqfs"
   manifestFileName* = "manifest.json"
+  lxcDevArchiveManifestFileName* = "lxcdev-manifest.json"
+  lxcDevArchiveFormat* = "lxcpkg-devarchive-v1"
 
 proc `$`*(mount: DataMount): string =
   result = &"{mount.name}:{mount.target}:{mount.uid}:{mount.gid}:{mount.mode}"
