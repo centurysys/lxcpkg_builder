@@ -94,6 +94,26 @@ proc requireInt(node: JsonNode; key: string): LxResult[int] =
 
   result = LxResult[int].ok(child.getInt())
 
+proc optionalInt(node: JsonNode; key: string; defaultValue: int): LxResult[int] =
+  if not node.hasKey(key):
+    return LxResult[int].ok(defaultValue)
+
+  let child = node[key]
+  if child.kind != JInt:
+    return LxResult[int].err(invalidManifest("invalid integer", key))
+
+  result = LxResult[int].ok(child.getInt())
+
+proc optionalString(node: JsonNode; key: string; defaultValue: string): LxResult[string] =
+  if not node.hasKey(key):
+    return LxResult[string].ok(defaultValue)
+
+  let child = node[key]
+  if child.kind != JString:
+    return LxResult[string].err(invalidManifest("invalid string", key))
+
+  result = LxResult[string].ok(child.getStr())
+
 proc optionalDataMounts(node: JsonNode): LxResult[seq[DataMount]] =
   var mounts: seq[DataMount] = @[]
 
@@ -104,7 +124,8 @@ proc optionalDataMounts(node: JsonNode): LxResult[seq[DataMount]] =
   if dataMounts.kind != JArray:
     return LxResult[seq[DataMount]].err(invalidManifest("invalid dataMounts", "expected array"))
 
-  for index, item in dataMounts:
+  for index in 0 ..< dataMounts.len:
+    let item = dataMounts[index]
     if item.kind != JObject:
       return LxResult[seq[DataMount]].err(invalidManifest("invalid dataMounts entry", &"index={index}"))
 
@@ -116,15 +137,18 @@ proc optionalDataMounts(node: JsonNode): LxResult[seq[DataMount]] =
     if target.isErr:
       return LxResult[seq[DataMount]].err(target.error())
 
-    let uid = requireInt(item, "uid")
+    # Older .lxcpkg manifests may only contain name/target for dataMounts.
+    # Treat uid/gid/mode as optional for backward compatibility and emit the
+    # normalized defaults when the package is rebuilt.
+    let uid = optionalInt(item, "uid", defaultDataMountUid)
     if uid.isErr:
       return LxResult[seq[DataMount]].err(uid.error())
 
-    let gid = requireInt(item, "gid")
+    let gid = optionalInt(item, "gid", defaultDataMountGid)
     if gid.isErr:
       return LxResult[seq[DataMount]].err(gid.error())
 
-    let mode = requireString(item, "mode")
+    let mode = optionalString(item, "mode", defaultDataMountMode)
     if mode.isErr:
       return LxResult[seq[DataMount]].err(mode.error())
 
