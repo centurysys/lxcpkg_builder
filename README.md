@@ -12,6 +12,7 @@
 - `manifest.json` と `rootfs.sqfs` を含む `.lxcpkg` archive 作成
 - data mount の owner / group / mode 設定
 - rootfs 内の `/etc/passwd` / `/etc/group` を使った user / group 名の解決
+- base `.lxcpkg` と WebUI から取得した `.lxcdev` を組み合わせた rebuild
 
 このツールは汎用 LXC パッケージャではありません。
 弊社機器の WebUI / AppServer の `.lxcpkg` 仕様に合わせた専用ツールです。
@@ -47,16 +48,26 @@ Archive:  Debian.lxcpkg
 
 ## 必要な外部コマンド
 
-`lxcpkg` は以下の外部コマンドを使用します。
+`lxcpkg build` は以下の外部コマンドを使用します。
 
 - `mksquashfs`
 - `zip`
 
+`lxcpkg rebuild` は追加で以下の外部コマンドを使用します。
+
+- `unzip`
+- `tar`
+- `zstd`
+- `mount`
+- `umount`
+
 Debian / Ubuntu 系では、概ね以下で入ります。
 
 ```sh
-sudo apt install squashfs-tools zip
+sudo apt install squashfs-tools zip unzip tar zstd mount
 ```
+
+`rebuild` は squashfs の loop mount と overlayfs mount を行うため、Linux 上で root 権限が必要です。
 
 ---
 
@@ -189,6 +200,175 @@ CI や手順書に書く場合は、必要な option をすべて指定します
 
 --keep-workdir
     成功時も temporary build directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
+---
+
+## rebuild command
+
+`rebuild` は、元の `.lxcpkg` と WebUI からダウンロードした `.lxcdev` 開発アーカイブを組み合わせて、新しい `.lxcpkg` を作成します。
+
+用途:
+
+```text
+1. PC で base .lxcpkg を作成する
+2. 実機 WebUI に upload / install する
+3. snapshot mode の instance 上で開発・調整する
+4. WebUI から .lxcdev をダウンロードする
+5. PC 上で base .lxcpkg + .lxcdev から更新版 .lxcpkg を rebuild する
+```
+
+`.lxcdev` には rootfs 全体は含まれません。
+保存済み overlay snapshot、LXC config、instance metadata、package manifest、lxcdev manifest を含む差分アーカイブです。
+
+そのため `rebuild` には、`.lxcdev` の元になった base `.lxcpkg` が必要です。
+
+---
+
+### 基本例
+
+```sh
+sudo ./lxcpkg rebuild \
+  --base Debian-1.0.0.lxcpkg \
+  --dev Debian-1.0.0-Debian.lxcdev \
+  --output Debian-rebuilt.lxcpkg
+```
+
+`rebuild` は Linux の mount 機能を使います。
+通常は `sudo` 付きで実行してください。
+
+出力例:
+
+```text
+lxcpkg rebuild options:
+  base:            Debian-1.0.0.lxcpkg
+  dev:             Debian-1.0.0-Debian.lxcdev
+  output:          Debian-rebuilt.lxcpkg
+  packageId:       com.example.Debian
+  name:            Debian
+  baseVersion:     1.0.0
+  version:         1.0.0+lxcdev.20260530.2325
+  arch:            aarch64
+  rootfsMode:      volatile
+  compression:     zstd
+  blockSize:       1M
+Created package: Debian-rebuilt.lxcpkg
+```
+
+---
+
+### version の扱い
+
+`--version` を指定した場合は、その version をそのまま使用します。
+
+```sh
+sudo ./lxcpkg rebuild \
+  --base Debian-1.0.0.lxcpkg \
+  --dev Debian-1.0.0-Debian.lxcdev \
+  --version 1.0.1 \
+  --output Debian-1.0.1.lxcpkg
+```
+
+`--version` を省略した場合、base package の version が `MAJOR.MINOR.PATCH` 形式なら、UTC 分単位の build metadata を付けます。
+
+```text
+1.0.0 -> 1.0.0+lxcdev.YYYYMMDD.HHMM
+```
+
+例:
+
+```text
+1.0.0 -> 1.0.0+lxcdev.20260530.2325
+```
+
+base version が `1.0.0-dev` や `v1.0.0` のように `MAJOR.MINOR.PATCH` 形式でない場合は、version を変更せず、warning を表示します。
+
+正式配布用の version を明確にしたい場合は、`--version` を明示してください。
+
+---
+
+### rebuild の内部処理
+
+`rebuild` は、単純に overlay snapshot を base rootfs へ copy するわけではありません。
+削除済みファイルや opaque directory を正しく反映するため、overlayfs の merged view を作ってから `mksquashfs` します。
+
+処理の概要:
+
+```text
+1. base .lxcpkg を unzip
+2. .lxcdev を unzip
+3. manifest.json と lxcdev-manifest.json を読む
+4. base rootfs.sqfs の SHA256 を照合
+5. overlay-snapshot.tar.zst の SHA256 を照合
+6. rootfs.sqfs を squashfs として read-only mount
+7. overlay-snapshot.tar.zst を upperdir に展開
+8. overlayfs で merged rootfs を mount
+9. merged rootfs から新しい rootfs.sqfs を作成
+10. 新しい manifest.json を作成
+11. manifest.json + rootfs.sqfs を zip 化して .lxcpkg を作成
+```
+
+互換性確認として、以下が一致しない場合はエラーになります。
+
+```text
+package name
+package version
+architecture
+image file name
+base image SHA256
+overlay snapshot SHA256
+```
+
+`.lxcdev` に data mount の中身が含まれる形式は、現在は未対応です。
+`dataMountsIncluded=true` の `.lxcdev` は拒否します。
+
+---
+
+## rebuild command options
+
+```text
+--base=BASE
+    Base .lxcpkg file.
+    .lxcdev の元になった package を指定します。
+
+--dev=DEV
+    Development .lxcdev archive.
+    WebUI の Download .lxcdev で取得した archive を指定します。
+
+-o, --output=OUTPUT
+    Output .lxcpkg file.
+    未指定時は <name>-<version>.lxcpkg。
+
+--version=VERSION
+    Package version for rebuilt package.
+    未指定時は、base version が MAJOR.MINOR.PATCH 形式なら +lxcdev.YYYYMMDD.HHMM を付けます。
+
+--rootfs-mode=MODE
+    Rootfs overlay mode for rebuilt package.
+    指定可能値: persistent, volatile, snapshot。
+    未指定時は base package の rootfsMode を引き継ぎます。
+
+--compression=COMPRESSION
+    Squashfs compression.
+    指定可能値: zstd, xz, gzip, lz4, lzo。
+    未指定時は zstd。
+
+--block-size=SIZE
+    Squashfs block size.
+    未指定時は 1M。
+
+--exclude=PATTERN
+    Additional mksquashfs exclude pattern.
+    複数指定可能。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary rebuild directory を削除せず残します。
 
 -v, --verbose
     実行する外部コマンドなどを表示します。
@@ -453,7 +633,9 @@ output file already exists: /path/to/Debian.lxcpkg
 
 ## temporary build directory
 
-build 中は `/tmp/lxcpkg-<pid>-<index>` のような temporary build directory を作成します。
+`build` 中は `/tmp/lxcpkg-<pid>-<index>` のような temporary build directory を作成します。
+
+`rebuild` 中は `/tmp/lxcpkg-rebuild-<pid>-<index>` のような temporary rebuild directory を作成します。
 
 成功時:
 
@@ -477,6 +659,13 @@ temporary build directory を残す
 ```text
 Temporary build directory was kept for inspection: /tmp/lxcpkg-2707-0
 Remove it manually after checking: rm -rf /tmp/lxcpkg-2707-0
+```
+
+`rebuild` の場合:
+
+```text
+Temporary rebuild directory was kept for inspection: /tmp/lxcpkg-rebuild-9682-0
+Remove it manually after checking: rm -rf /tmp/lxcpkg-rebuild-9682-0
 ```
 
 ---
@@ -548,6 +737,26 @@ cat manifest.json
 
 `sha256sum rootfs.sqfs` と `manifest.json` の `image.sha256` が一致すれば OK です。
 
+### rebuild した package の確認
+
+```sh
+unzip -l Debian-rebuilt.lxcpkg
+unzip -p Debian-rebuilt.lxcpkg manifest.json | jq .
+```
+
+期待する中身:
+
+```text
+manifest.json
+rootfs.sqfs
+```
+
+version を省略した場合、manifest には次のような version が入ります。
+
+```json
+"version": "1.0.0+lxcdev.20260530.2325"
+```
+
 ---
 
 ## WebUI / AppServer 側での確認
@@ -605,7 +814,8 @@ data/Debian/from-user1 は残る
 - このツールは rootfs directory を作成するものではありません。
 - rootfs は事前に debootstrap / mmdebstrap / 手作業などで準備してください。
 - rootfs directory 自体は変更しません。
-- `mksquashfs` と `zip` は外部コマンドとして実行します。
+- `rebuild` は Linux の overlayfs mount を使うため、Linux 上の root 権限が必要です。
+- `mksquashfs` / `zip` / `unzip` / `tar` / `zstd` / `mount` / `umount` は外部コマンドとして実行します。
 - 対応 architecture は `armhf` と `aarch64` のみです。
 - data mount target は AppServer 側の validation と合わせる必要があります。
 - `/var/<app>` を使う場合、AppServer 側も `/var/<app>` data mount を許可する版である必要があります。
