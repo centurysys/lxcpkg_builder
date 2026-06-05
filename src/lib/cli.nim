@@ -7,6 +7,7 @@ import argparse
 import results
 
 import build
+import delta
 import errors
 import rebuild
 
@@ -57,6 +58,48 @@ proc runCli*(): int =
         let buildResult = runBuild(raw)
         if buildResult.isErr:
           let e = buildResult.error()
+          stderr.writeLine(e.displayMessage())
+          status = e.exitCode()
+
+
+    command("delta"):
+      help("Build a .lxcdelta archive from a base package and a .lxcdev archive")
+
+      option("--base", help = "Base .lxcpkg file")
+      option("--dev", help = "Development .lxcdev archive")
+      option("-o", "--output", help = "Output .lxcdelta file")
+      option("--version", help = "Package version for delta package")
+      option("--compression", default = some("zstd"), choices = @["zstd", "xz", "gzip", "lz4", "lzo"], help = "Squashfs compression")
+      option("--block-size", default = some("1M"), help = "Squashfs block size")
+      option("--exclude", multiple = true, help = "Additional mksquashfs exclude pattern")
+      flag("--no-clean", help = "Do not remove apt/cache/log/tmp files from the extracted overlay upperdir before creating delta.sqfs")
+      flag("--no-scrub", help = "Do not remove machine-id, SSH host keys, shell history, and other instance-specific files before creating delta.sqfs")
+      flag("--no-prune-empty-dirs", help = "Do not remove empty cleanup directories after release cleanup")
+      flag("--no-release-clean", help = "Disable the default release cleanup; equivalent to --no-clean --no-scrub --no-prune-empty-dirs")
+      flag("--keep-workdir", help = "Keep temporary delta directory after successful delta build")
+      flag("-f", "--force", help = "Overwrite output file")
+      flag("-v", "--verbose", help = "Show external commands")
+
+      run:
+        let raw = RawDeltaOptions(
+          base: opts.base_opt,
+          dev: opts.dev_opt,
+          output: opts.output_opt,
+          version: opts.version_opt,
+          compression: some(opts.compression),
+          blockSize: some(opts.block_size),
+          exclude: opts.exclude,
+          clean: not opts.no_clean and not opts.no_release_clean,
+          scrub: not opts.no_scrub and not opts.no_release_clean,
+          pruneEmptyDirs: not opts.no_prune_empty_dirs and not opts.no_release_clean,
+          force: opts.force,
+          verbose: opts.verbose,
+          keepWorkdir: opts.keep_workdir
+        )
+
+        let deltaResult = runDelta(raw)
+        if deltaResult.isErr:
+          let e = deltaResult.error()
           stderr.writeLine(e.displayMessage())
           status = e.exitCode()
 

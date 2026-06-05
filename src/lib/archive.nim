@@ -82,6 +82,14 @@ proc checkArchiveOutput*(outputFile: string; force: bool): LxResult[void] =
   result = LxResult[void].ok()
 
 
+
+proc ensureArchiveExtension*(path, extension: string): string =
+  let stripped = path.strip()
+  if stripped.toLowerAscii().endsWith(extension.toLowerAscii()):
+    return stripped
+
+  result = stripped & extension
+
 proc extractZipArchive*(archiveFile, outputDir: string; verbose: bool): LxResult[void] =
   if archiveFile.len == 0:
     return LxResult[void].err(missingArgument("archive file"))
@@ -107,38 +115,57 @@ proc extractZipArchive*(archiveFile, outputDir: string; verbose: bool): LxResult
 
   result = runCommand(tool.get(), args, getCurrentDir(), verbose)
 
-proc createArchive*(opts: ArchiveOptions): LxResult[void] =
-  let outputCheck = checkArchiveOutput(opts.outputFile, opts.force)
+proc createArchiveWithImageName*(
+    manifestFile, imageFile, imageArchiveName, outputFile: string,
+    force, verbose: bool,
+    store: bool = false
+): LxResult[void] =
+  let outputCheck = checkArchiveOutput(outputFile, force)
   if outputCheck.isErr:
     return outputCheck
 
-  if not fileExists(opts.manifestFile):
-    return LxResult[void].err(ioError("manifest file does not exist", opts.manifestFile))
+  if not fileExists(manifestFile):
+    return LxResult[void].err(ioError("manifest file does not exist", manifestFile))
 
-  if not fileExists(opts.imageFile):
-    return LxResult[void].err(ioError("rootfs image file does not exist", opts.imageFile))
+  if not fileExists(imageFile):
+    return LxResult[void].err(ioError("image file does not exist", imageFile))
 
-  let outputPath = absolutePath(opts.outputFile)
-  if fileExists(outputPath) and opts.force:
+  let outputPath = absolutePath(outputFile)
+  if fileExists(outputPath) and force:
     try:
       removeFile(outputPath)
     except OSError as e:
       return LxResult[void].err(ioError("failed to remove existing output file", e.msg))
 
-  let workDir = opts.manifestFile.parentDir()
+  let workDir = manifestFile.parentDir()
   if workDir.len == 0:
-    return LxResult[void].err(ioError("invalid archive working directory", opts.manifestFile))
+    return LxResult[void].err(ioError("invalid archive working directory", manifestFile))
+
+  if imageFile.parentDir().normalizedPath() != workDir.normalizedPath():
+    return LxResult[void].err(
+      ioError("manifest and image must be in the same archive working directory")
+    )
 
   let tool = findTool("zip")
   if tool.isErr:
     return LxResult[void].err(tool.error())
 
-  let args = @[
-    "-q",
-    "-r",
-    outputPath,
-    manifestFileName,
-    rootfsImageFileName
-  ]
+  var args = @["-q"]
+  if store:
+    args.add("-0")
+  args.add("-r")
+  args.add(outputPath)
+  args.add(manifestFileName)
+  args.add(imageArchiveName)
 
-  result = runCommand(tool.get(), args, workDir, opts.verbose)
+  result = runCommand(tool.get(), args, workDir, verbose)
+
+proc createArchive*(opts: ArchiveOptions): LxResult[void] =
+  result = createArchiveWithImageName(
+    opts.manifestFile,
+    opts.imageFile,
+    rootfsImageFileName,
+    opts.outputFile,
+    opts.force,
+    opts.verbose
+  )

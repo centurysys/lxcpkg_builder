@@ -82,12 +82,16 @@ proc nameValue(opts: RawBuildOptions): LxResult[string] =
 
 proc outputValue(opts: RawBuildOptions; name: string): LxResult[string] =
   if opts.output.isSome and opts.output.get().len > 0:
-    return LxResult[string].ok(opts.output.get())
+    return LxResult[string].ok(ensureArchiveExtension(opts.output.get(), ".lxcpkg"))
 
   if opts.nonInteractive:
     return LxResult[string].err(missingArgument("--output"))
 
-  result = promptRequiredString("Output .lxcpkg file", &"{name}.lxcpkg")
+  let output = promptRequiredString("Output .lxcpkg file", &"{name}.lxcpkg")
+  if output.isErr:
+    return output
+
+  result = LxResult[string].ok(ensureArchiveExtension(output.get(), ".lxcpkg"))
 
 proc packageIdValue(opts: RawBuildOptions; name: string): string =
   let defaultId = defaultPackageId(name)

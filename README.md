@@ -13,6 +13,7 @@
 - data mount の owner / group / mode 設定
 - rootfs 内の `/etc/passwd` / `/etc/group` を使った user / group 名の解決
 - base `.lxcpkg` と WebUI から取得した `.lxcdev` を組み合わせた rebuild
+- base `.lxcpkg` と `.lxcdev` から差分 `.lxcdelta` を作成する delta build
 
 このツールは汎用 LXC パッケージャではありません。
 弊社機器の WebUI / AppServer の `.lxcpkg` 仕様に合わせた専用ツールです。
@@ -46,6 +47,22 @@ Archive:  Debian.lxcpkg
 
 ---
 
+## 想定する `.lxcdelta` の中身
+
+`lxcpkg delta` で生成される `.lxcdelta` も zip archive です。中身は次の 2 ファイルです。
+
+```text
+manifest.json
+delta.sqfs
+```
+
+`.lxcdelta` は full rootfs ではなく、base `.lxcpkg` に対する overlayfs upperdir 差分です。
+実機側では `delta.sqfs` を base より上位の read-only lower として重ねます。
+
+`delta.sqfs` はすでに squashfs として圧縮済みなので、`.lxcdelta` の zip archive では再圧縮せず store method で格納します。
+
+---
+
 ## 必要な外部コマンド
 
 `lxcpkg build` は以下の外部コマンドを使用します。
@@ -61,6 +78,12 @@ Archive:  Debian.lxcpkg
 - `mount`
 - `umount`
 
+`lxcpkg delta` は追加で以下の外部コマンドを使用します。
+
+- `unzip`
+- `tar`
+- `zstd`
+
 Debian / Ubuntu 系では、概ね以下で入ります。
 
 ```sh
@@ -68,6 +91,8 @@ sudo apt install squashfs-tools zip unzip tar zstd mount
 ```
 
 `rebuild` は squashfs の loop mount と overlayfs mount を行うため、Linux 上で root 権限が必要です。
+
+`delta` は `.lxcdev` の overlay snapshot を展開し、upperdir を `mksquashfs` するため、overlayfs native whiteout を含む archive を扱える Linux 環境での実行を前提にします。
 
 ---
 
@@ -151,6 +176,9 @@ CI や手順書に書く場合は、必要な option をすべて指定します
 
 -o, --output=OUTPUT
     Output .lxcpkg file.
+    指定値が .lxcpkg で終わらない場合は .lxcpkg を自動付与します。
+    例: -o Debian -> Debian.lxcpkg
+    例: -o Debian.pkg -> Debian.pkg.lxcpkg
 
 --package-id=PACKAGE_ID
     Package ID.
@@ -341,6 +369,9 @@ overlay snapshot SHA256
 -o, --output=OUTPUT
     Output .lxcpkg file.
     未指定時は <name>-<version>.lxcpkg。
+    指定値が .lxcpkg で終わらない場合は .lxcpkg を自動付与します。
+    例: -o update -> update.lxcpkg
+    例: -o update.pkg -> update.pkg.lxcpkg
 
 --version=VERSION
     Package version for rebuilt package.
@@ -369,6 +400,227 @@ overlay snapshot SHA256
 
 --keep-workdir
     成功時も temporary rebuild directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
+---
+
+## delta command
+
+`delta` は、元の `.lxcpkg` と WebUI からダウンロードした `.lxcdev` 開発アーカイブを組み合わせて、base image に対する差分 `.lxcdelta` を作成します。
+
+`rebuild` が merged rootfs 全体を新しい `rootfs.sqfs` に焼き直すのに対し、`delta` は `.lxcdev` に含まれる overlayfs upperdir snapshot を `delta.sqfs` として保存します。
+そのため、追加・変更ファイルだけでなく、overlayfs native whiteout による削除差分も維持されます。
+
+用途:
+
+```text
+1. PC で base .lxcpkg を作成する
+2. 実機 WebUI に upload / install する
+3. snapshot mode の instance 上で開発・調整する
+4. 必要に応じて実機側で不要ファイルを削除する
+5. WebUI から .lxcdev をダウンロードする
+6. PC 上で base .lxcpkg + .lxcdev から .lxcdelta を作成する
+7. 実機側で base image に対する delta image として適用する
+```
+
+---
+
+### 基本例
+
+```sh
+sudo ./lxcpkg delta \
+  --base Debian-1.0.0.lxcpkg \
+  --dev Debian-1.0.0-Debian.lxcdev \
+  --version 1.0.1 \
+  --output Debian-1.0.1.lxcdelta
+```
+
+出力例:
+
+```text
+lxcpkg delta options:
+  base:            Debian-1.0.0.lxcpkg
+  dev:             Debian-1.0.0-Debian.lxcdev
+  output:          Debian-1.0.1.lxcdelta
+  packageId:       com.example.Debian
+  name:            Debian
+  baseVersion:     1.0.0
+  version:         1.0.1
+  arch:            aarch64
+  compression:     zstd
+  blockSize:       1M
+Created delta package: Debian-1.0.1.lxcdelta
+```
+
+---
+
+### release cleanup
+
+`delta` は配布用差分を作るコマンドなので、標準では release cleanup を行います。
+`.lxcdev` の overlay snapshot を展開した後、`mksquashfs` の前に upperdir から不要ファイルと実機固有情報を削除します。
+
+標準動作は以下と同等です。
+
+```text
+clean: true
+scrub: true
+pruneEmptyDirs: true
+```
+
+`clean` の主な対象は以下です。
+
+```text
+/var/cache/apt/archives/*
+/var/lib/apt/lists/*
+/tmp/*
+/var/tmp/*
+/run/*
+/var/run/*
+/var/log/*
+/root/.cache/*
+```
+
+`scrub` の主な対象は以下です。
+
+```text
+/etc/machine-id
+/var/lib/dbus/machine-id
+/etc/ssh/ssh_host_*_key
+/etc/ssh/ssh_host_*_key.pub
+/root/.bash_history
+/root/.wget-hsts
+/root/.cache/*
+```
+
+`pruneEmptyDirs` では、cleanup / scrub 後に空になった以下のような directory を削除します。
+
+```text
+/etc/ssh
+/root/.cache
+/tmp
+/var/tmp
+/run
+/var/run
+/var/log
+/var/cache/apt/archives
+/var/cache/apt
+/var/lib/apt/lists
+```
+
+cleanup / scrub / pruneEmptyDirs の対象は merged rootfs ではなく、展開後の overlay upperdir です。
+merged rootfs 上で削除すると、base 側ファイルに対する whiteout が追加され、delta が不要に大きくなる場合があります。
+
+また、overlayfs native whiteout を削除すると base 側のファイルが復活してしまいます。
+そのため cleanup / scrub / pruneEmptyDirs は regular file、symlink、空 directory を対象にし、character device などの special entry は削除しません。
+
+検証目的で意図的に残したい場合だけ、以下の opt-out option を使います。
+
+```sh
+sudo ./lxcpkg delta \
+  --base Debian-1.0.0.lxcpkg \
+  --dev Debian-1.0.0-Debian.lxcdev \
+  --version 1.0.1 \
+  --output Debian-1.0.1.lxcdelta \
+  --no-clean
+```
+
+`--no-release-clean` は `--no-clean --no-scrub --no-prune-empty-dirs` と同等で、配布用には通常使いません。
+
+---
+
+### delta の内部処理
+
+処理の概要:
+
+```text
+1. base .lxcpkg を unzip
+2. .lxcdev を unzip
+3. manifest.json と lxcdev-manifest.json を読む
+4. base rootfs.sqfs の SHA256 を照合
+5. overlay-snapshot.tar.zst の SHA256 を照合
+6. overlay-snapshot.tar.zst を upperdir に展開
+7. 標準で upperdir から不要物を cleanup / scrub し、空になった cleanup directory を削除
+8. upperdir から delta.sqfs を作成
+9. delta.sqfs の SHA256 を計算
+10. delta 用 manifest.json を作成
+11. manifest.json + delta.sqfs を zip 化して .lxcdelta を作成
+    - delta.sqfs は squashfs 側で圧縮済みなので、zip 側では store method で格納する
+```
+
+互換性確認として、以下が一致しない場合はエラーになります。
+
+```text
+package name
+package version
+architecture
+image file name
+base image SHA256
+overlay snapshot SHA256
+```
+
+`.lxcdev` に data mount の中身が含まれる形式は、現在は未対応です。
+`dataMountsIncluded=true` の `.lxcdev` は拒否します。
+
+---
+
+## delta command options
+
+```text
+--base=BASE
+    Base .lxcpkg file.
+    .lxcdev の元になった package を指定します。
+
+--dev=DEV
+    Development .lxcdev archive.
+    WebUI の Download .lxcdev で取得した archive を指定します。
+
+-o, --output=OUTPUT
+    Output .lxcdelta file.
+    未指定時は <name>-<version>.lxcdelta。
+    指定値が .lxcdelta で終わらない場合は .lxcdelta を自動付与します。
+    例: -o update -> update.lxcdelta
+    例: -o update.delta -> update.delta.lxcdelta
+
+--version=VERSION
+    Package version for delta package.
+
+--compression=COMPRESSION
+    Squashfs compression.
+    指定可能値: zstd, xz, gzip, lz4, lzo。
+    未指定時は zstd。
+
+--block-size=SIZE
+    Squashfs block size.
+    未指定時は 1M。
+
+--exclude=PATTERN
+    Additional mksquashfs exclude pattern.
+    複数指定可能。
+
+--no-clean
+    Extracted overlay upperdir から apt cache / log / tmp などを削除せずに delta.sqfs を作成します。
+    標準では cleanup します。
+
+--no-scrub
+    machine-id、SSH host key、shell history などの実機固有情報を削除せずに delta.sqfs を作成します。
+    標準では scrub します。
+
+--no-prune-empty-dirs
+    cleanup / scrub 後に空になった cleanup directory を削除せずに delta.sqfs を作成します。
+    標準では空 directory を削除します。
+
+--no-release-clean
+    標準の release cleanup を無効化します。
+    `--no-clean --no-scrub --no-prune-empty-dirs` と同等です。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary delta directory を削除せず残します。
 
 -v, --verbose
     実行する外部コマンドなどを表示します。
@@ -610,6 +862,24 @@ rootfs directory 自体は変更しません。
 
 ## output file の扱い
 
+`build` / `rebuild` command の `--output` は、指定値が `.lxcpkg` で終わらない場合に `.lxcpkg` を自動付与します。
+
+```text
+-o Debian             -> Debian.lxcpkg
+-o Debian.pkg         -> Debian.pkg.lxcpkg
+-o Debian.lxcpkg      -> Debian.lxcpkg
+```
+
+`delta` command の `--output` は、指定値が `.lxcdelta` で終わらない場合に `.lxcdelta` を自動付与します。
+
+```text
+-o update             -> update.lxcdelta
+-o update.delta       -> update.delta.lxcdelta
+-o update.lxcdelta    -> update.lxcdelta
+```
+
+これにより、WebUI や file chooser 側で `.lxcpkg` / `.lxcdelta` の拡張子 filter を使ったときに、生成物が見つからない事故を避けます。
+
 既存 output file がある場合、`--force` なしではエラー終了します。
 
 ```text
@@ -636,6 +906,8 @@ output file already exists: /path/to/Debian.lxcpkg
 `build` 中は `/tmp/lxcpkg-<pid>-<index>` のような temporary build directory を作成します。
 
 `rebuild` 中は `/tmp/lxcpkg-rebuild-<pid>-<index>` のような temporary rebuild directory を作成します。
+
+`delta` 中は `/tmp/lxcpkg-delta-<pid>-<index>` のような temporary delta directory を作成します。
 
 成功時:
 
@@ -666,6 +938,13 @@ Remove it manually after checking: rm -rf /tmp/lxcpkg-2707-0
 ```text
 Temporary rebuild directory was kept for inspection: /tmp/lxcpkg-rebuild-9682-0
 Remove it manually after checking: rm -rf /tmp/lxcpkg-rebuild-9682-0
+```
+
+`delta` の場合:
+
+```text
+Temporary delta directory was kept for inspection: /tmp/lxcpkg-delta-9741-0
+Remove it manually after checking: rm -rf /tmp/lxcpkg-delta-9741-0
 ```
 
 ---
@@ -751,6 +1030,20 @@ manifest.json
 rootfs.sqfs
 ```
 
+### delta package の確認
+
+```sh
+unzip -l Debian-1.0.1.lxcdelta
+unzip -p Debian-1.0.1.lxcdelta manifest.json | jq .
+```
+
+期待する中身:
+
+```text
+manifest.json
+delta.sqfs
+```
+
 version を省略した場合、manifest には次のような version が入ります。
 
 ```json
@@ -815,7 +1108,12 @@ data/Debian/from-user1 は残る
 - rootfs は事前に debootstrap / mmdebstrap / 手作業などで準備してください。
 - rootfs directory 自体は変更しません。
 - `rebuild` は Linux の overlayfs mount を使うため、Linux 上の root 権限が必要です。
+- `delta` は overlayfs upperdir の差分をそのまま squashfs 化します。merged rootfs 全体を作る用途ではありません。
+- `delta` は標準で apt cache / log / tmp の cleanup、machine-id / SSH host key などの scrub、空 cleanup directory の削除を行います。
+- 検証目的で意図的に残す場合だけ `--no-clean` / `--no-scrub` / `--no-prune-empty-dirs` / `--no-release-clean` を使ってください。
 - `mksquashfs` / `zip` / `unzip` / `tar` / `zstd` / `mount` / `umount` は外部コマンドとして実行します。
 - 対応 architecture は `armhf` と `aarch64` のみです。
 - data mount target は AppServer 側の validation と合わせる必要があります。
 - `/var/<app>` を使う場合、AppServer 側も `/var/<app>` data mount を許可する版である必要があります。
+
+---

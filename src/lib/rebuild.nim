@@ -304,9 +304,9 @@ proc devValue(opts: RawRebuildOptions): LxResult[string] =
 
 proc outputValue(opts: RawRebuildOptions; manifest: PackageManifest; version: string): string =
   if opts.output.isSome and opts.output.get().len > 0:
-    return opts.output.get()
+    return ensureArchiveExtension(opts.output.get(), ".lxcpkg")
 
-  result = &"{manifest.name}-{version}.lxcpkg"
+  result = ensureArchiveExtension(&"{manifest.name}-{version}", ".lxcpkg")
 
 proc versionValue(opts: RawRebuildOptions; baseVersion: string): string =
   if opts.version.isSome and opts.version.get().len > 0:
