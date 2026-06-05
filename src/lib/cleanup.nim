@@ -29,6 +29,26 @@ const
     "root/.cache"
   ]
 
+  # Safe language/runtime caches. These are package-manager or bytecode caches
+  # generated during image preparation and are not the application payload
+  # itself. Directories such as node_modules, venv, vendor, build, target,
+  # *.o, and *.a are intentionally not included here.
+  languageCleanupDirs* = [
+    "root/.npm",
+    "root/.pnpm-store",
+    "root/.composer/cache"
+  ]
+
+  homeLanguageCleanupSubdirs* = [
+    ".cache/pip",
+    ".cache/pypoetry",
+    ".cache/yarn",
+    ".cache/pnpm",
+    ".npm",
+    ".pnpm-store",
+    ".composer/cache"
+  ]
+
   cleanupFiles*: array[0, string] = []
 
   scrubFiles* = [
@@ -50,6 +70,10 @@ const
   prunableEmptyDirs* = [
     "etc/ssh",
     "root/.cache",
+    "root/.npm",
+    "root/.pnpm-store",
+    "root/.composer/cache",
+    "root/.composer",
     "tmp",
     "var/tmp",
     "run",
@@ -221,6 +245,66 @@ proc clearDirIfPresent(root, relativePath: string; verbose: bool): LxResult[void
 
   result = runCommand(find.get(), deleteEmptyDirs, verbose)
 
+proc removePythonBytecodeForDelta(root: string; verbose: bool): LxResult[void] =
+  let find = findTool("find")
+  if find.isErr:
+    return LxResult[void].err(find.error())
+
+  # Remove Python bytecode files. They are regenerated at runtime when the
+  # rootfs is writable through the runtime overlay, and Python can still run
+  # from .py files if bytecode generation is not possible.
+  let deleteBytecodeFiles = @[
+    root,
+    "-xdev",
+    "(", "-type", "f", "-o", "-type", "l", ")",
+    "(", "-name", "*.pyc", "-o", "-name", "*.pyo", ")",
+    "-delete"
+  ]
+
+  let bytecodeDeleted = runCommand(find.get(), deleteBytecodeFiles, verbose)
+  if bytecodeDeleted.isErr:
+    return bytecodeDeleted
+
+  # Remove __pycache__ directories after deleting files. This intentionally
+  # targets only Python cache directories, not generic build directories.
+  let deletePycacheDirs = @[
+    root,
+    "-xdev",
+    "-type", "d",
+    "-name", "__pycache__",
+    "-prune",
+    "-exec", "rm", "-rf", "{}", "+"
+  ]
+
+  result = runCommand(find.get(), deletePycacheDirs, verbose)
+
+proc cleanHomeLanguageCaches(root: string; verbose: bool): LxResult[void] =
+  let home = checkedPath(root, "home")
+  if home.isErr:
+    return LxResult[void].err(home.error())
+
+  if not dirExists(home.get()):
+    return LxResult[void].ok()
+
+  try:
+    for kind, path in walkDir(home.get()):
+      if kind != pcDir:
+        continue
+
+      let userName = path.extractFilename()
+      if userName.len == 0 or userName == "." or userName == "..":
+        continue
+
+      for subdir in homeLanguageCleanupSubdirs:
+        let relativePath = "home" / userName / subdir
+        let cleaned = clearDirIfPresent(root, relativePath, verbose)
+        if cleaned.isErr:
+          return cleaned
+  except OSError as e:
+    return LxResult[void].err(ioError("failed to scan home directories", e.msg))
+
+  result = LxResult[void].ok()
+
 proc removeGlobRegularOrSymlink(root, relativePattern: string; verbose: bool): LxResult[void] =
   let slash = relativePattern.rfind('/')
   if slash < 0:
@@ -269,6 +353,19 @@ proc cleanOverlayForDelta*(upperDir: string; verbose = false): LxResult[void] =
     let cleaned = clearDirIfPresent(upperDir, relativePath, verbose)
     if cleaned.isErr:
       return cleaned
+
+  for relativePath in languageCleanupDirs:
+    let cleaned = clearDirIfPresent(upperDir, relativePath, verbose)
+    if cleaned.isErr:
+      return cleaned
+
+  let homeCachesCleaned = cleanHomeLanguageCaches(upperDir, verbose)
+  if homeCachesCleaned.isErr:
+    return homeCachesCleaned
+
+  let pythonBytecodeCleaned = removePythonBytecodeForDelta(upperDir, verbose)
+  if pythonBytecodeCleaned.isErr:
+    return pythonBytecodeCleaned
 
   for relativePath in cleanupFiles:
     let cleaned = removeFileIfRegularOrSymlink(upperDir, relativePath, verbose)
