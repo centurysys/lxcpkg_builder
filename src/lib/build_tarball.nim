@@ -46,6 +46,25 @@ proc optionValue(value: Option[string]; defaultValue: string): string =
   else:
     result = defaultValue
 
+proc printBuildTarballSummary(opts: RawBuildTarballOptions; tarball: string) =
+  let name = optionValue(opts.name, "<auto>")
+  let output = optionValue(opts.output, "<required>")
+  let arch = optionValue(opts.arch, "<auto>")
+  let preset = optionValue(opts.preset, "none")
+  let normalize = optionValue(opts.normalize, "none")
+  let minimize = optionValue(opts.minimize, "none")
+  let networkMode = optionValue(opts.networkMode, "dhcp")
+
+  echo "lxcpkg build-tarball:"
+  echo &"  tarball:      {tarball}"
+  echo &"  name:         {name}"
+  echo &"  output:       {output}"
+  echo &"  arch:         {arch}"
+  echo &"  preset:       {preset}"
+  echo &"  normalize:    {normalize}"
+  echo &"  minimize:     {minimize}"
+  echo &"  network mode: {networkMode}"
+
 proc findRequiredTool(tool: string): LxResult[string] =
   let path = findExe(tool)
   if path.len == 0:
@@ -233,6 +252,10 @@ proc runBuildTarball*(opts: RawBuildTarballOptions): LxResult[void] =
   let profiles = resolveProfiles(opts.preset, opts.normalize, opts.minimize, opts.networkMode)
   if profiles.isErr:
     return LxResult[void].err(profiles.error())
+
+  if not opts.verbose:
+    printBuildTarballSummary(opts, tarball)
+    echo "Extracting rootfs tarball..."
 
   let workDir = makeWorkDir(optionValue(opts.workDir, ""))
   if workDir.isErr:

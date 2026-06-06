@@ -38,6 +38,7 @@ type
     minimize*: Option[string]
     networkMode*: Option[string]
     preset*: Option[string]
+    suppressSummary*: bool
     force*: bool
     verbose*: bool
     keepWorkdir*: bool
@@ -71,6 +72,41 @@ proc optionValue(value: Option[string]; defaultValue: string): string =
     result = value.get()
   else:
     result = defaultValue
+
+proc printPackLxcDirSummary(opts: RawPackLxcDirOptions; rootfsPath: string) =
+  let output = optionValue(opts.output, "<auto>")
+  let preset = optionValue(opts.preset, "none")
+  let normalize = optionValue(opts.normalize, "none")
+  let minimize = optionValue(opts.minimize, "none")
+  let networkMode = optionValue(opts.networkMode, "dhcp")
+
+  echo "lxcpkg pack-lxc-dir:"
+  echo &"  lxc dir:      {opts.lxcDir.get()}"
+  echo &"  rootfs:       {rootfsPath}"
+  echo &"  output:       {output}"
+  echo &"  preset:       {preset}"
+  echo &"  normalize:    {normalize}"
+  echo &"  minimize:     {minimize}"
+  echo &"  network mode: {networkMode}"
+
+proc printBuildDownloadSummary(opts: RawBuildDownloadOptions; name: string; lxcArch: string) =
+  let output = optionValue(opts.output, "<required>")
+  let preset = optionValue(opts.preset, "none")
+  let normalize = optionValue(opts.normalize, "none")
+  let minimize = optionValue(opts.minimize, "none")
+  let networkMode = optionValue(opts.networkMode, "dhcp")
+
+  echo "lxcpkg build-download:"
+  if opts.interactive:
+    echo &"  image:        interactive, arch={lxcArch}"
+  else:
+    echo &"  image:        {opts.dist.get()}/{opts.release.get()}/{lxcArch}"
+  echo &"  name:         {name}"
+  echo &"  output:       {output}"
+  echo &"  preset:       {preset}"
+  echo &"  normalize:    {normalize}"
+  echo &"  minimize:     {minimize}"
+  echo &"  network mode: {networkMode}"
 
 proc parseDownloadArchitecture(archOpt, bitsOpt: Option[string]): LxResult[DownloadArchitecture] =
   if archOpt.isSome and bitsOpt.isSome:
@@ -265,6 +301,9 @@ proc runPackLxcDir*(opts: RawPackLxcDirOptions): LxResult[void] =
   if profiles.isErr:
     return LxResult[void].err(profiles.error())
 
+  if not opts.verbose and not opts.suppressSummary:
+    printPackLxcDirSummary(opts, rootfsPath.get())
+
   let (normalize, minimize, networkMode) = profiles.get()
   let tuned = applyRootfsProfiles(rootfsPath.get(), normalize, minimize, networkMode, opts.verbose)
   if tuned.isErr:
@@ -348,6 +387,10 @@ proc runBuildDownload*(opts: RawBuildDownloadOptions): LxResult[void] =
     return LxResult[void].err(workDir.error())
 
   let tmpName = &"{name}-work"
+  if not opts.verbose:
+    printBuildDownloadSummary(opts, name, arch.get().lxcArch)
+    echo "Downloading rootfs via lxc-create..."
+
   let downloadResult = runLxcDownload(opts, workDir.get(), tmpName, arch.get().lxcArch)
   if downloadResult.isErr:
     if opts.keepWorkdir:
@@ -373,6 +416,7 @@ proc runBuildDownload*(opts: RawBuildDownloadOptions): LxResult[void] =
     minimize: opts.minimize,
     networkMode: opts.networkMode,
     preset: opts.preset,
+    suppressSummary: true,
     force: opts.force,
     verbose: opts.verbose,
     keepWorkdir: opts.keepWorkdir

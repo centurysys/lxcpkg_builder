@@ -362,6 +362,15 @@ proc printResolvedOptions(buildOpts: BuildOptions; rawData: seq[string]) =
   echo &"  keepWorkdir:     {buildOpts.keepWorkdir}"
   echo &"  verbose:         {buildOpts.verbose}"
 
+proc printPackageSummary(buildOpts: BuildOptions) =
+  echo "Package settings:"
+  echo &"  name:        {buildOpts.name}"
+  echo &"  version:     {buildOpts.version}"
+  echo &"  arch:        {buildOpts.arch}"
+  echo &"  output:      {buildOpts.outputFile}"
+  echo &"  rootfs mode: {buildOpts.rootfsMode}"
+  echo &"  squashfs:    {buildOpts.compression}, block size {buildOpts.blockSize}"
+
 proc warnKeptBuildDir(buildDir: string) =
   if buildDir.len == 0:
     return
@@ -370,22 +379,27 @@ proc warnKeptBuildDir(buildDir: string) =
   stderr.writeLine(&"Remove it manually after checking: rm -rf {buildDir}")
 
 proc buildPackageSteps(buildOpts: BuildOptions; buildDir: string): LxResult[void] =
-  echo &"Build directory: {buildDir}"
+  if buildOpts.verbose:
+    echo &"Build directory: {buildDir}"
 
+  echo "Creating rootfs image..."
   let imageResult = createRootfsImage(buildOpts, buildDir)
   if imageResult.isErr:
     return LxResult[void].err(imageResult.error())
 
   let imagePath = imageResult.get()
-  echo &"Created rootfs image: {imagePath}"
+  if buildOpts.verbose:
+    echo &"Created rootfs image: {imagePath}"
 
   let manifestResult = createManifestFile(buildOpts, imagePath, buildDir)
   if manifestResult.isErr:
     return LxResult[void].err(manifestResult.error())
 
   let manifestPath = manifestResult.get()
-  echo &"Created manifest: {manifestPath}"
+  if buildOpts.verbose:
+    echo &"Created manifest: {manifestPath}"
 
+  echo &"Writing package: {buildOpts.outputFile}"
   let archiveResult = createPackageArchive(buildOpts, manifestPath, imagePath)
   if archiveResult.isErr:
     return LxResult[void].err(archiveResult.error())
@@ -438,7 +452,10 @@ proc runBuild*(opts: RawBuildOptions): LxResult[void] =
     return LxResult[void].err(resolved.error())
 
   let buildOpts = resolved.get()
-  printResolvedOptions(buildOpts, opts.data)
+  if buildOpts.verbose:
+    printResolvedOptions(buildOpts, opts.data)
+  else:
+    printPackageSummary(buildOpts)
 
   let tuned = applyRequestedRootfsProfiles(opts, buildOpts.rootfsDir)
   if tuned.isErr:

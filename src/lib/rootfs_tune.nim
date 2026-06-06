@@ -242,10 +242,27 @@ proc runSandboxCommand(rootfs, command: string; args: seq[string]; verbose: bool
   # The destination /mnt already exists in normal host roots, so the target
   # rootfs can be mounted there without creating writable directories outside
   # the sandbox. The original host / is visible read-only; only /mnt is rw.
+  #
+  # /dev/null is explicitly dev-bound after --ro-bind / /. Some cleanup scripts
+  # or shell redirections may open /dev/null for writing; without this override,
+  # /dev/null can be visible through the read-only host root mount and cause
+  # confusing "cannot create /dev/null" errors.
+  #
+  # Do not use --unshare-all here. It also unshares the user namespace, and then
+  # root inside the sandbox may not have normal privileges over files owned by
+  # unmapped users in downloaded rootfs images, such as Debian's _apt-owned
+  # /var/cache/apt/archives/partial directory. We only need mount isolation and
+  # a read-only host root for cleanup safety. Keeping the caller's user namespace
+  # preserves normal root permissions when lxcpkg is run with sudo/root.
   var bwrapArgs = @[
     "--die-with-parent",
-    "--unshare-all",
+    "--unshare-pid",
+    "--unshare-ipc",
+    "--unshare-uts",
+    "--unshare-cgroup",
+    "--unshare-net",
     "--ro-bind", "/", "/",
+    "--dev-bind", "/dev/null", "/dev/null",
     "--bind", rootAbs.get(), sandboxRoot,
     command
   ]
@@ -262,7 +279,7 @@ proc clearDirContents(rootfs, relativePath: string; verbose: bool): LxResult[voi
   if find.len == 0:
     return LxResult[void].err(externalToolMissing("find"))
 
-  let script = "target=$1; find_cmd=$2; if [ -d \"$target\" ]; then exec \"$find_cmd\" \"$target\" -xdev -mindepth 1 -delete; fi"
+  let script = "target=$1; find_cmd=$2; if [ -d \"$target\" ]; then chmod -R u+rwX \"$target\" || true; exec \"$find_cmd\" \"$target\" -xdev -mindepth 1 -delete; fi"
   result = runSandboxCommand(rootfs, "/bin/sh", @["-eu", "-c", script, "sh", target.get(), find], verbose)
 
 proc removePathIfExists(rootfs, relativePath: string; verbose = false): LxResult[void] =
