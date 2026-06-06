@@ -15,6 +15,7 @@ import errors
 import manifest
 import prompts
 import rootfs
+import rootfs_tune
 import squashfs
 import types
 import validation
@@ -32,6 +33,10 @@ type
     blockSize*: Option[string]
     data*: seq[string]
     exclude*: seq[string]
+    normalize*: Option[string]
+    minimize*: Option[string]
+    networkMode*: Option[string]
+    preset*: Option[string]
     nonInteractive*: bool
     force*: bool
     verbose*: bool
@@ -42,6 +47,12 @@ proc formatSeq(value: seq[string]): string =
     result = "<none>"
   else:
     result = value.join(", ")
+
+proc optionValue(value: Option[string]; defaultValue: string): string =
+  if value.isSome and value.get().len > 0:
+    result = value.get()
+  else:
+    result = defaultValue
 
 proc formatDataMounts(value: seq[DataMount]): string =
   if value.len == 0:
@@ -351,6 +362,15 @@ proc printResolvedOptions(buildOpts: BuildOptions; rawData: seq[string]) =
   echo &"  keepWorkdir:     {buildOpts.keepWorkdir}"
   echo &"  verbose:         {buildOpts.verbose}"
 
+proc printPackageSummary(buildOpts: BuildOptions) =
+  echo "Package settings:"
+  echo &"  name:        {buildOpts.name}"
+  echo &"  version:     {buildOpts.version}"
+  echo &"  arch:        {buildOpts.arch}"
+  echo &"  output:      {buildOpts.outputFile}"
+  echo &"  rootfs mode: {buildOpts.rootfsMode}"
+  echo &"  squashfs:    {buildOpts.compression}, block size {buildOpts.blockSize}"
+
 proc warnKeptBuildDir(buildDir: string) =
   if buildDir.len == 0:
     return
@@ -359,22 +379,27 @@ proc warnKeptBuildDir(buildDir: string) =
   stderr.writeLine(&"Remove it manually after checking: rm -rf {buildDir}")
 
 proc buildPackageSteps(buildOpts: BuildOptions; buildDir: string): LxResult[void] =
-  echo &"Build directory: {buildDir}"
+  if buildOpts.verbose:
+    echo &"Build directory: {buildDir}"
 
+  echo "Creating rootfs image..."
   let imageResult = createRootfsImage(buildOpts, buildDir)
   if imageResult.isErr:
     return LxResult[void].err(imageResult.error())
 
   let imagePath = imageResult.get()
-  echo &"Created rootfs image: {imagePath}"
+  if buildOpts.verbose:
+    echo &"Created rootfs image: {imagePath}"
 
   let manifestResult = createManifestFile(buildOpts, imagePath, buildDir)
   if manifestResult.isErr:
     return LxResult[void].err(manifestResult.error())
 
   let manifestPath = manifestResult.get()
-  echo &"Created manifest: {manifestPath}"
+  if buildOpts.verbose:
+    echo &"Created manifest: {manifestPath}"
 
+  echo &"Writing package: {buildOpts.outputFile}"
   let archiveResult = createPackageArchive(buildOpts, manifestPath, imagePath)
   if archiveResult.isErr:
     return LxResult[void].err(archiveResult.error())
@@ -408,12 +433,32 @@ proc buildPackage(buildOpts: BuildOptions): LxResult[void] =
   warnKeptBuildDir(buildDir)
   result = buildResult
 
+proc applyRequestedRootfsProfiles(opts: RawBuildOptions; rootfsDir: string): LxResult[void] =
+  let profiles = resolveRootfsProfileSelection(
+    optionValue(opts.preset, "none"),
+    optionValue(opts.normalize, "none"),
+    optionValue(opts.minimize, "none"),
+    optionValue(opts.networkMode, "dhcp")
+  )
+  if profiles.isErr:
+    return LxResult[void].err(profiles.error())
+
+  let (normalize, minimize, networkMode) = profiles.get()
+  result = applyRootfsProfiles(rootfsDir, normalize, minimize, networkMode, opts.verbose)
+
 proc runBuild*(opts: RawBuildOptions): LxResult[void] =
   let resolved = resolveBuildOptions(opts)
   if resolved.isErr:
     return LxResult[void].err(resolved.error())
 
   let buildOpts = resolved.get()
-  printResolvedOptions(buildOpts, opts.data)
+  if buildOpts.verbose:
+    printResolvedOptions(buildOpts, opts.data)
+  else:
+    printPackageSummary(buildOpts)
+
+  let tuned = applyRequestedRootfsProfiles(opts, buildOpts.rootfsDir)
+  if tuned.isErr:
+    return LxResult[void].err(tuned.error())
 
   result = buildPackage(buildOpts)

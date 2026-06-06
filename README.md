@@ -13,9 +13,42 @@
 - data mount の owner / group / mode 設定
 - rootfs 内の `/etc/passwd` / `/etc/group` を使った user / group 名の解決
 - base `.lxcpkg` と WebUI から取得した `.lxcdev` を組み合わせた rebuild
+- Linux Containers Image Server から取得した rootfs の `.lxcpkg` 化
+- rootfs tarball からの `.lxcpkg` 化
+- `lxc-create -t download` で作成済みの LXC directory からの `.lxcpkg` 化
 
 このツールは汎用 LXC パッケージャではありません。
 弊社機器の WebUI / AppServer の `.lxcpkg` 仕様に合わせた専用ツールです。
+
+## このツールでできること
+
+`lxcpkg` は、弊社機器の仮想インスタンス機能で使う `.lxcpkg` を作るためのツールです。
+
+Docker の `pull` のように「外部のイメージを取得してすぐ使い始める」導線は便利ですが、組み込み機器ではそのまま Docker daemon を常駐させる運用が重すぎる場合があります。`lxcpkg` は、Linux Containers / Incus Image Server 由来の rootfs や、手元の rootfs directory / tarball を、弊社機器向けの `.lxcpkg` に変換します。
+
+生成される `.lxcpkg` は、以下の方針で運用しやすい形になります。
+
+- rootfs は squashfs として read-only 配布
+- 書き込み差分は overlay として分離
+- IP アドレス、DNS、device injection はホスト側で管理
+- `/dev/video*`, `/dev/hailo0`, GPIO, serial device などをホスト側から注入しやすい
+- rootfs の cache / log / tmp 掃除は bubblewrap sandbox 内で実行
+- Debian / Ubuntu 系では `apt.conf.d` / `dpkg.cfg.d` に容量爆増防止設定を入れられる
+
+つまり、汎用コンテナ環境をそのまま持ち込むのではなく、弊社機器上で安全に扱いやすい LXC パッケージへ変換するための入口です。
+
+主な作成経路は次の 3 つです。
+
+```text
+展開済み rootfs directory
+  -> lxcpkg build
+
+Linux Containers / Incus Image Server
+  -> lxcpkg build-download
+
+rootfs tarball
+  -> lxcpkg build-tarball
+```
 
 ---
 
@@ -53,6 +86,14 @@ Archive:  Debian.lxcpkg
 - `mksquashfs`
 - `zip`
 
+`lxcpkg build-download` / `lxcpkg build-tarball` / `lxcpkg pack-lxc-dir` は、追加で以下の外部コマンドを使用します。
+
+- `lxc-create`
+- `lxc-download` template
+- `tar`
+- `bubblewrap` (`bwrap`)
+- `find`
+
 `lxcpkg rebuild` は追加で以下の外部コマンドを使用します。
 
 - `unzip`
@@ -64,10 +105,71 @@ Archive:  Debian.lxcpkg
 Debian / Ubuntu 系では、概ね以下で入ります。
 
 ```sh
-sudo apt install squashfs-tools zip unzip tar zstd mount
+sudo apt install squashfs-tools zip unzip tar zstd mount lxc lxc-templates bubblewrap
 ```
 
+`build-download` は `lxc-create -t download` を使って Linux Containers Image Server から rootfs を取得します。
+`--normalize` / `--minimize` / `--network-mode host-configured` による rootfs 変更は `bwrap` 内で実行します。ホスト側 `/` は read-only、対象 rootfs だけを read-write で bind mount するため、掃除処理が誤ってホスト rootfs を破壊するリスクを抑えます。
 `rebuild` は squashfs の loop mount と overlayfs mount を行うため、Linux 上で root 権限が必要です。
+
+
+### Rootfs cleanup safety
+
+`build-download` / `build-tarball` / `pack-lxc-dir` の normalize / minimize 処理は、rootfs の中身を実際に変更します。
+そのため、`lxcpkg` は cache / log / tmp などを掃除するときに、ホストの mount namespace 上で直接 `rm -rf` 相当の操作を行いません。
+
+破壊的な処理は `bubblewrap` sandbox 内で実行します。
+
+```text
+host /      -> sandbox /      read-only
+target rootfs -> sandbox /mnt  read-write
+```
+
+この構成により、仮に rootfs 内に予期しない symlink があっても、ホスト側 rootfs は read-only として見えるため、掃除処理がホスト側の `/etc`, `/var`, `/usr` などを削除する事故を避けやすくなります。
+
+`bwrap` が無い環境では、normalize / minimize / host-configured network profile は失敗します。
+これは意図した挙動です。安全性を落としてホスト namespace で直接掃除する fallback は用意していません。
+
+---
+
+
+## 製品向け preset
+
+`build`, `build-download`, `build-tarball`, `pack-lxc-dir` では、製品向け rootfs 調整をまとめて指定する `--preset` を使えます。
+
+```text
+--preset alpine-appliance
+  normalize=product
+  minimize=alpine
+  network-mode=host-configured
+
+--preset debian-appliance
+  normalize=product
+  minimize=debian
+  network-mode=host-configured
+
+--preset ubuntu-appliance
+  normalize=product
+  minimize=debian
+  network-mode=host-configured
+
+--preset auto-appliance
+  normalize=product
+  minimize=auto
+  network-mode=host-configured
+```
+
+Debian / Ubuntu 系の `minimize=debian` では、rootfs 内に以下のような設定を入れます。
+
+- `APT::Install-Recommends "false";`
+- `APT::Install-Suggests "false";`
+- `Acquire::Languages "none";`
+- `/usr/share/doc` は copyright 以外を除外
+- man / info / lintian / locale などを dpkg の install 対象から除外
+
+これにより、コンテナ内でユーザーが `apt install` したときに、推奨パッケージや多言語ファイル、man page などが大量に入り、意図せず巨大な rootfs / overlay を作ってしまう事故を避けやすくなります。
+
+`--preset` は製品向けの既定値セットです。個別に調整したい場合は `--preset none` のまま、`--normalize`, `--minimize`, `--network-mode` を直接指定してください。
 
 ---
 
@@ -194,6 +296,354 @@ CI や手順書に書く場合は、必要な option をすべて指定します
 
 --non-interactive
     不足項目があっても対話入力せず、エラー終了します。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary build directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
+---
+
+## build-download command
+
+`build-download` は、Linux Containers Image Server から rootfs を取得し、そのまま `.lxcpkg` を作成します。
+
+Image Server の index や URL 構造は `lxcpkg` では解釈せず、標準の `lxc-download` template に任せます。
+`lxcpkg` 側は、取得済み rootfs を製品向けの squashfs ベース `.lxcpkg` に変換することに集中します。
+
+### Alpine arm64 の例
+
+```sh
+sudo ./lxcpkg build-download \
+  --dist alpine \
+  --release 3.23 \
+  --bits 64 \
+  --name alpine3.23 \
+  --version 3.23 \
+  --output alpine3.23.lxcpkg \
+  --preset auto-appliance
+```
+
+処理の概要は以下です。
+
+```text
+1. /var/tmp 配下に temporary work directory を作成
+2. lxc-create -t download で rootfs を取得
+3. 生成された LXC config から lxc.rootfs.path を読む
+4. bwrap sandbox 内で rootfs に normalize / minimize / network profile を適用
+5. 既存の build flow で rootfs.sqfs と manifest.json を作成
+6. .lxcpkg archive を作成
+```
+
+### Debian / Ubuntu の例
+
+```sh
+sudo ./lxcpkg build-download \
+  --dist debian \
+  --release trixie \
+  --bits 64 \
+  --name DebianTrixie \
+  --version 13 \
+  --output DebianTrixie.lxcpkg \
+  --preset debian-appliance
+```
+
+`--network-mode host-configured` は Alpine では default networking service を外します。
+Debian / Ubuntu / Fedora などの systemd 系 rootfs では、現時点では blindly に network service を無効化しません。
+
+### 対話モード
+
+`lxc-download` template の対話選択をそのまま使いたい場合は `--interactive` を指定します。
+
+```sh
+sudo ./lxcpkg build-download \
+  --interactive \
+  --bits 64 \
+  --name test \
+  --version 1.0.0 \
+  --output test.lxcpkg \
+  --preset auto-appliance
+```
+
+`--interactive` では `lxc-create` の stdin / stdout / stderr を親端末に接続します。
+
+---
+
+## build-download command options
+
+```text
+--dist=DIST
+    Distribution name passed to lxc-download.
+    例: alpine, debian, ubuntu, fedora。
+
+--release=RELEASE
+    Distribution release passed to lxc-download.
+    例: 3.23, trixie, noble, 44。
+
+--bits=BITS
+    Target ARM bit width.
+    指定可能値: 64, 32。
+    64 は arm64、32 は armhf として lxc-download に渡します。
+
+--arch=ARCH
+    Target architecture.
+    指定可能値: arm64, aarch64, armhf, armv7, armv7l。
+    --bits と同時には指定できません。
+
+--interactive
+    lxc-download template の対話選択を使用します。
+
+--work-dir=PATH
+    Temporary work directory parent.
+    未指定時は /var/tmp。
+
+--normalize=PROFILE
+    Rootfs normalize profile.
+    指定可能値: none, product。
+    product では /etc/resolv.conf symlink 対策、machine-id 初期化、tmp/log 掃除を行います。
+    変更処理は bwrap sandbox 内で実行されます。
+
+--minimize=PROFILE
+    Rootfs minimize profile.
+    指定可能値: none, auto, alpine, debian。
+    auto は /etc/os-release を見て Alpine / Debian-like を判定します。
+    cache / log / tmp の削除は bwrap sandbox 内で実行されます。
+
+--network-mode=MODE
+    Container network policy.
+    指定可能値: dhcp, host-configured。
+    dhcp は rootfs 側の初期設定を尊重します。
+    host-configured は host 側 LXC config から IP / DNS を注入する製品運用向けです。
+
+--preset=PRESET
+    製品向け rootfs profile preset。
+    指定可能値: none, auto-appliance, alpine-appliance, debian-appliance, ubuntu-appliance。
+    preset 指定時は normalize / minimize / network-mode の製品向け組み合わせを適用します。
+
+-o, --output=OUTPUT
+    Output .lxcpkg file.
+
+--package-id=PACKAGE_ID
+    Package ID.
+
+--name=NAME
+    Package name.
+
+--version=VERSION
+    Package version.
+
+--rootfs-mode=MODE
+    Initial rootfs overlay mode.
+    指定可能値: persistent, volatile, snapshot。
+
+--compression=COMPRESSION
+    Squashfs compression.
+
+--block-size=SIZE
+    Squashfs block size.
+
+--data=SPEC
+    Data mount specification.
+    複数指定可能。
+
+--exclude=PATTERN
+    Additional mksquashfs exclude pattern.
+    複数指定可能。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary work directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
+---
+
+## build-tarball command
+
+`build-tarball` は、既に手元にある rootfs tarball から `.lxcpkg` を作成します。
+
+`build-download` は `lxc-create -t download` が使える環境向けですが、CI や社内ミラー、手動ダウンロード済みの `rootfs.tar.xz` / `rootfs.tar.zst` / `rootfs.tar.gz` を使いたい場合は `build-tarball` のほうが単純です。
+
+### 例
+
+```sh
+sudo ./lxcpkg build-tarball   --tarball rootfs.tar.xz   --name alpine3.23   --version 3.23   --arch aarch64   --output alpine3.23.lxcpkg   --preset auto-appliance
+```
+
+処理の概要は以下です。
+
+```text
+1. /var/tmp 配下に temporary work directory を作成
+2. tarball を rootfs-extract directory に展開
+3. archive root または単一の top-level directory から rootfs を検出
+4. bwrap sandbox 内で rootfs に normalize / minimize / network profile を適用
+5. 既存の build flow で rootfs.sqfs と manifest.json を作成
+6. .lxcpkg archive を作成
+```
+
+rootfs tarball は、archive root に `etc/passwd` と `etc/group` がある形式、または単一の top-level directory の下に rootfs がある形式を想定します。
+
+### build-tarball command options
+
+```text
+--tarball=TARBALL
+    Rootfs tarball.
+    例: rootfs.tar.xz, rootfs.tar.zst, rootfs.tar.gz, rootfs.tar.bz2。
+
+--work-dir=PATH
+    Temporary extraction work directory parent.
+    未指定時は /var/tmp。
+
+--normalize=PROFILE
+    Rootfs normalize profile.
+    指定可能値: none, product。
+    変更処理は bwrap sandbox 内で実行されます。
+
+--minimize=PROFILE
+    Rootfs minimize profile.
+    指定可能値: none, auto, alpine, debian。
+    cache / log / tmp の削除は bwrap sandbox 内で実行されます。
+
+--network-mode=MODE
+    Container network policy.
+    指定可能値: dhcp, host-configured。
+
+--preset=PRESET
+    製品向け rootfs profile preset。
+    指定可能値: none, auto-appliance, alpine-appliance, debian-appliance, ubuntu-appliance。
+
+-o, --output=OUTPUT
+    Output .lxcpkg file.
+
+--package-id=PACKAGE_ID
+    Package ID.
+
+--name=NAME
+    Package name.
+
+--version=VERSION
+    Package version.
+
+--arch=ARCH
+    Target architecture.
+    指定可能値: armhf, aarch64。
+
+--rootfs-mode=MODE
+    Initial rootfs overlay mode.
+    指定可能値: persistent, volatile, snapshot。
+
+--compression=COMPRESSION
+    Squashfs compression.
+
+--block-size=SIZE
+    Squashfs block size.
+
+--data=SPEC
+    Data mount specification.
+    複数指定可能。
+
+--exclude=PATTERN
+    Additional mksquashfs exclude pattern.
+    複数指定可能。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary work directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
+
+## pack-lxc-dir command
+
+`pack-lxc-dir` は、既に作成済みの LXC directory から `.lxcpkg` を作成します。
+
+例えば、手元で次のように rootfs を取得済みの場合に使います。
+
+```sh
+sudo lxc-create -t download -P /var/tmp/lxcdownload -n alpine \
+  -- -a arm64 -d alpine -r 3.23
+```
+
+`.lxcpkg` 化は以下です。
+
+```sh
+sudo ./lxcpkg pack-lxc-dir \
+  --lxc-dir /var/tmp/lxcdownload/alpine \
+  --name alpine3.23 \
+  --version 3.23 \
+  --arch aarch64 \
+  --output alpine3.23.lxcpkg \
+  --preset auto-appliance
+```
+
+`pack-lxc-dir` は `<lxc-dir>/config` を読み、`lxc.rootfs.path` から rootfs directory を見つけます。
+download template 由来の LXC config は製品側へそのまま持ち込まず、rootfs path の検出と source 情報の参考にだけ使います。
+
+---
+
+## pack-lxc-dir command options
+
+```text
+--lxc-dir=LXC_DIR
+    LXC directory containing config and rootfs.
+
+-o, --output=OUTPUT
+    Output .lxcpkg file.
+
+--package-id=PACKAGE_ID
+    Package ID.
+
+--name=NAME
+    Package name.
+
+--version=VERSION
+    Package version.
+
+--arch=ARCH
+    Target architecture.
+    指定可能値: armhf, aarch64。
+
+--rootfs-mode=MODE
+    Initial rootfs overlay mode.
+
+--normalize=PROFILE
+    Rootfs normalize profile.
+    指定可能値: none, product。
+
+--minimize=PROFILE
+    Rootfs minimize profile.
+    指定可能値: none, auto, alpine, debian。
+
+--network-mode=MODE
+    Container network policy.
+    指定可能値: dhcp, host-configured。
+
+--compression=COMPRESSION
+    Squashfs compression.
+
+--block-size=SIZE
+    Squashfs block size.
+
+--data=SPEC
+    Data mount specification.
+    複数指定可能。
+
+--exclude=PATTERN
+    Additional mksquashfs exclude pattern.
+    複数指定可能。
 
 -f, --force
     既存 output file を上書きします。
