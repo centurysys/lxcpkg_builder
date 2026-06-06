@@ -33,6 +33,10 @@ proc runCli*(): int =
       option("--block-size", default = some("1M"), help = "Squashfs block size")
       option("--data", multiple = true, help = "Data mount: name:target[:uid-or-user[:gid-or-group[:mode]]]")
       option("--exclude", multiple = true, help = "Additional mksquashfs exclude pattern")
+      option("--preset", default = some("none"), choices = @["none", "auto-appliance", "alpine-appliance", "debian-appliance", "ubuntu-appliance"], help = "Product rootfs profile preset")
+      option("--normalize", default = some("none"), choices = @["none", "product"], help = "Rootfs normalize profile")
+      option("--minimize", default = some("none"), choices = @["none", "auto", "alpine", "debian"], help = "Rootfs minimize profile")
+      option("--network-mode", default = some("dhcp"), choices = @["dhcp", "host-configured"], help = "Rootfs network startup mode")
       flag("--non-interactive", help = "Do not prompt for missing values")
       flag("--keep-workdir", help = "Keep temporary build directory after successful build")
       flag("-f", "--force", help = "Overwrite output file")
@@ -51,6 +55,10 @@ proc runCli*(): int =
           blockSize: some(opts.block_size),
           data: opts.data,
           exclude: opts.exclude,
+          normalize: some(opts.normalize),
+          minimize: some(opts.minimize),
+          networkMode: some(opts.network_mode),
+          preset: some(opts.preset),
           nonInteractive: opts.non_interactive,
           force: opts.force,
           verbose: opts.verbose,
@@ -81,6 +89,7 @@ proc runCli*(): int =
       option("--normalize", default = some("none"), choices = @["none", "product"], help = "Rootfs normalize profile")
       option("--minimize", default = some("none"), choices = @["none", "auto", "alpine", "debian"], help = "Rootfs minimize profile")
       option("--network-mode", default = some("dhcp"), choices = @["dhcp", "host-configured"], help = "Rootfs network startup mode")
+      option("--preset", default = some("none"), choices = @["none", "auto-appliance", "alpine-appliance", "debian-appliance", "ubuntu-appliance"], help = "Product rootfs profile preset")
       flag("--keep-workdir", help = "Keep temporary build directory after successful build")
       flag("-f", "--force", help = "Overwrite output file")
       flag("-v", "--verbose", help = "Show external commands")
@@ -101,6 +110,7 @@ proc runCli*(): int =
           normalize: some(opts.normalize),
           minimize: some(opts.minimize),
           networkMode: some(opts.network_mode),
+          preset: some(opts.preset),
           force: opts.force,
           verbose: opts.verbose,
           keepWorkdir: opts.keep_workdir
@@ -131,6 +141,7 @@ proc runCli*(): int =
       option("--normalize", default = some("product"), choices = @["none", "product"], help = "Rootfs normalize profile")
       option("--minimize", default = some("auto"), choices = @["none", "auto", "alpine", "debian"], help = "Rootfs minimize profile")
       option("--network-mode", default = some("dhcp"), choices = @["dhcp", "host-configured"], help = "Rootfs network startup mode")
+      option("--preset", default = some("none"), choices = @["none", "auto-appliance", "alpine-appliance", "debian-appliance", "ubuntu-appliance"], help = "Product rootfs profile preset")
       option("--work-dir", help = "Parent directory for temporary download work directory; default is /var/tmp")
       flag("--interactive", help = "Let lxc-download ask for missing distribution/release information")
       flag("--keep-workdir", help = "Keep temporary download/build directory after successful build")
@@ -155,6 +166,7 @@ proc runCli*(): int =
           normalize: some(opts.normalize),
           minimize: some(opts.minimize),
           networkMode: some(opts.network_mode),
+          preset: some(opts.preset),
           interactive: opts.interactive,
           workDir: opts.work_dir_opt,
           keepWorkdir: opts.keep_workdir,
@@ -186,6 +198,7 @@ proc runCli*(): int =
       option("--normalize", default = some("product"), choices = @["none", "product"], help = "Rootfs normalize profile")
       option("--minimize", default = some("auto"), choices = @["none", "auto", "alpine", "debian"], help = "Rootfs minimize profile")
       option("--network-mode", default = some("dhcp"), choices = @["dhcp", "host-configured"], help = "Rootfs network startup mode")
+      option("--preset", default = some("none"), choices = @["none", "auto-appliance", "alpine-appliance", "debian-appliance", "ubuntu-appliance"], help = "Product rootfs profile preset")
       option("--work-dir", help = "Parent directory for temporary extraction work directory; default is /var/tmp")
       flag("--keep-workdir", help = "Keep temporary extraction/build directory after successful build")
       flag("-f", "--force", help = "Overwrite output file")
@@ -207,6 +220,7 @@ proc runCli*(): int =
           normalize: some(opts.normalize),
           minimize: some(opts.minimize),
           networkMode: some(opts.network_mode),
+          preset: some(opts.preset),
           workDir: opts.work_dir_opt,
           keepWorkdir: opts.keep_workdir,
           force: opts.force,

@@ -37,6 +37,7 @@ type
     normalize*: Option[string]
     minimize*: Option[string]
     networkMode*: Option[string]
+    preset*: Option[string]
     force*: bool
     verbose*: bool
     keepWorkdir*: bool
@@ -58,6 +59,7 @@ type
     normalize*: Option[string]
     minimize*: Option[string]
     networkMode*: Option[string]
+    preset*: Option[string]
     interactive*: bool
     workDir*: Option[string]
     keepWorkdir*: bool
@@ -241,21 +243,14 @@ proc packageNameFromLxcDir(lxcDir: string; explicitName: Option[string]): Option
   result = none(string)
 
 proc resolveProfiles(
-    normalizeOpt, minimizeOpt, networkModeOpt: Option[string]
+    presetOpt, normalizeOpt, minimizeOpt, networkModeOpt: Option[string]
 ): LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)] =
-  let normalize = parseNormalizeProfile(optionValue(normalizeOpt, "none"))
-  if normalize.isErr:
-    return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(normalize.error())
-
-  let minimize = parseMinimizeProfile(optionValue(minimizeOpt, "none"))
-  if minimize.isErr:
-    return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(minimize.error())
-
-  let networkMode = parseNetworkMode(optionValue(networkModeOpt, "dhcp"))
-  if networkMode.isErr:
-    return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(networkMode.error())
-
-  result = LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].ok((normalize.get(), minimize.get(), networkMode.get()))
+  result = resolveRootfsProfileSelection(
+    optionValue(presetOpt, "none"),
+    optionValue(normalizeOpt, "none"),
+    optionValue(minimizeOpt, "none"),
+    optionValue(networkModeOpt, "dhcp")
+  )
 
 proc runPackLxcDir*(opts: RawPackLxcDirOptions): LxResult[void] =
   if opts.lxcDir.isNone or opts.lxcDir.get().len == 0:
@@ -266,7 +261,7 @@ proc runPackLxcDir*(opts: RawPackLxcDirOptions): LxResult[void] =
   if rootfsPath.isErr:
     return LxResult[void].err(rootfsPath.error())
 
-  let profiles = resolveProfiles(opts.normalize, opts.minimize, opts.networkMode)
+  let profiles = resolveProfiles(opts.preset, opts.normalize, opts.minimize, opts.networkMode)
   if profiles.isErr:
     return LxResult[void].err(profiles.error())
 
@@ -287,6 +282,10 @@ proc runPackLxcDir*(opts: RawPackLxcDirOptions): LxResult[void] =
     blockSize: opts.blockSize,
     data: opts.data,
     exclude: opts.exclude,
+    normalize: none(string),
+    minimize: none(string),
+    networkMode: none(string),
+    preset: none(string),
     nonInteractive: true,
     force: opts.force,
     verbose: opts.verbose,
@@ -373,6 +372,7 @@ proc runBuildDownload*(opts: RawBuildDownloadOptions): LxResult[void] =
     normalize: opts.normalize,
     minimize: opts.minimize,
     networkMode: opts.networkMode,
+    preset: opts.preset,
     force: opts.force,
     verbose: opts.verbose,
     keepWorkdir: opts.keepWorkdir

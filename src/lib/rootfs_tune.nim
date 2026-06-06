@@ -30,6 +30,13 @@ type
     nmDhcp = "dhcp"
     nmHostConfigured = "host-configured"
 
+  AppliancePreset* = enum
+    apNone = "none"
+    apAuto = "auto-appliance"
+    apAlpine = "alpine-appliance"
+    apDebian = "debian-appliance"
+    apUbuntu = "ubuntu-appliance"
+
   OsRelease* = object
     id*: string
     idLike*: seq[string]
@@ -73,6 +80,63 @@ proc parseNetworkMode*(text: string): LxResult[NetworkMode] =
   else:
     result = LxResult[NetworkMode].err(
       invalidArgument("invalid network mode", "allowed values: dhcp, host-configured")
+    )
+
+proc parseAppliancePreset*(text: string): LxResult[AppliancePreset] =
+  case text.strip().toLowerAscii()
+  of "", "none":
+    result = LxResult[AppliancePreset].ok(apNone)
+  of "auto-appliance":
+    result = LxResult[AppliancePreset].ok(apAuto)
+  of "alpine-appliance":
+    result = LxResult[AppliancePreset].ok(apAlpine)
+  of "debian-appliance":
+    result = LxResult[AppliancePreset].ok(apDebian)
+  of "ubuntu-appliance":
+    result = LxResult[AppliancePreset].ok(apUbuntu)
+  else:
+    result = LxResult[AppliancePreset].err(
+      invalidArgument(
+        "invalid preset",
+        "allowed values: none, auto-appliance, alpine-appliance, debian-appliance, ubuntu-appliance"
+      )
+    )
+
+proc resolveRootfsProfileSelection*(
+    presetText, normalizeText, minimizeText, networkModeText: string
+): LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)] =
+  let preset = parseAppliancePreset(presetText)
+  if preset.isErr:
+    return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(preset.error())
+
+  case preset.get()
+  of apNone:
+    let normalize = parseNormalizeProfile(normalizeText)
+    if normalize.isErr:
+      return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(normalize.error())
+
+    let minimize = parseMinimizeProfile(minimizeText)
+    if minimize.isErr:
+      return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(minimize.error())
+
+    let networkMode = parseNetworkMode(networkModeText)
+    if networkMode.isErr:
+      return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(networkMode.error())
+
+    result = LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].ok(
+      (normalize.get(), minimize.get(), networkMode.get())
+    )
+  of apAuto:
+    result = LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].ok(
+      (npProduct, mpAuto, nmHostConfigured)
+    )
+  of apAlpine:
+    result = LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].ok(
+      (npProduct, mpAlpine, nmHostConfigured)
+    )
+  of apDebian, apUbuntu:
+    result = LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].ok(
+      (npProduct, mpDebian, nmHostConfigured)
     )
 
 proc normalizeRelativePath(relativePath: string): LxResult[string] =

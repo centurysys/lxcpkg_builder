@@ -34,6 +34,7 @@ type
     normalize*: Option[string]
     minimize*: Option[string]
     networkMode*: Option[string]
+    preset*: Option[string]
     workDir*: Option[string]
     keepWorkdir*: bool
     force*: bool
@@ -161,21 +162,14 @@ proc defaultNameFromTarball(tarball: string; explicitName: Option[string]): Opti
   result = none(string)
 
 proc resolveProfiles(
-    normalizeOpt, minimizeOpt, networkModeOpt: Option[string]
+    presetOpt, normalizeOpt, minimizeOpt, networkModeOpt: Option[string]
 ): LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)] =
-  let normalize = parseNormalizeProfile(optionValue(normalizeOpt, "none"))
-  if normalize.isErr:
-    return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(normalize.error())
-
-  let minimize = parseMinimizeProfile(optionValue(minimizeOpt, "none"))
-  if minimize.isErr:
-    return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(minimize.error())
-
-  let networkMode = parseNetworkMode(optionValue(networkModeOpt, "dhcp"))
-  if networkMode.isErr:
-    return LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].err(networkMode.error())
-
-  result = LxResult[(NormalizeProfile, MinimizeProfile, NetworkMode)].ok((normalize.get(), minimize.get(), networkMode.get()))
+  result = resolveRootfsProfileSelection(
+    optionValue(presetOpt, "none"),
+    optionValue(normalizeOpt, "none"),
+    optionValue(minimizeOpt, "none"),
+    optionValue(networkModeOpt, "dhcp")
+  )
 
 proc extractTarball(tarball, extractDir: string; verbose: bool): LxResult[void] =
   let tar = findRequiredTool("tar")
@@ -236,7 +230,7 @@ proc runBuildTarball*(opts: RawBuildTarballOptions): LxResult[void] =
   if not fileExists(tarball):
     return LxResult[void].err(ioError("tarball does not exist", tarball))
 
-  let profiles = resolveProfiles(opts.normalize, opts.minimize, opts.networkMode)
+  let profiles = resolveProfiles(opts.preset, opts.normalize, opts.minimize, opts.networkMode)
   if profiles.isErr:
     return LxResult[void].err(profiles.error())
 
@@ -282,6 +276,10 @@ proc runBuildTarball*(opts: RawBuildTarballOptions): LxResult[void] =
     blockSize: opts.blockSize,
     data: opts.data,
     exclude: opts.exclude,
+    normalize: none(string),
+    minimize: none(string),
+    networkMode: none(string),
+    preset: none(string),
     nonInteractive: true,
     force: opts.force,
     verbose: opts.verbose,

@@ -15,6 +15,7 @@ import errors
 import manifest
 import prompts
 import rootfs
+import rootfs_tune
 import squashfs
 import types
 import validation
@@ -32,6 +33,10 @@ type
     blockSize*: Option[string]
     data*: seq[string]
     exclude*: seq[string]
+    normalize*: Option[string]
+    minimize*: Option[string]
+    networkMode*: Option[string]
+    preset*: Option[string]
     nonInteractive*: bool
     force*: bool
     verbose*: bool
@@ -42,6 +47,12 @@ proc formatSeq(value: seq[string]): string =
     result = "<none>"
   else:
     result = value.join(", ")
+
+proc optionValue(value: Option[string]; defaultValue: string): string =
+  if value.isSome and value.get().len > 0:
+    result = value.get()
+  else:
+    result = defaultValue
 
 proc formatDataMounts(value: seq[DataMount]): string =
   if value.len == 0:
@@ -408,6 +419,19 @@ proc buildPackage(buildOpts: BuildOptions): LxResult[void] =
   warnKeptBuildDir(buildDir)
   result = buildResult
 
+proc applyRequestedRootfsProfiles(opts: RawBuildOptions; rootfsDir: string): LxResult[void] =
+  let profiles = resolveRootfsProfileSelection(
+    optionValue(opts.preset, "none"),
+    optionValue(opts.normalize, "none"),
+    optionValue(opts.minimize, "none"),
+    optionValue(opts.networkMode, "dhcp")
+  )
+  if profiles.isErr:
+    return LxResult[void].err(profiles.error())
+
+  let (normalize, minimize, networkMode) = profiles.get()
+  result = applyRootfsProfiles(rootfsDir, normalize, minimize, networkMode, opts.verbose)
+
 proc runBuild*(opts: RawBuildOptions): LxResult[void] =
   let resolved = resolveBuildOptions(opts)
   if resolved.isErr:
@@ -415,5 +439,9 @@ proc runBuild*(opts: RawBuildOptions): LxResult[void] =
 
   let buildOpts = resolved.get()
   printResolvedOptions(buildOpts, opts.data)
+
+  let tuned = applyRequestedRootfsProfiles(opts, buildOpts.rootfsDir)
+  if tuned.isErr:
+    return LxResult[void].err(tuned.error())
 
   result = buildPackage(buildOpts)
