@@ -8,6 +8,7 @@ import results
 
 import build
 import delta
+import download_build
 import errors
 import rebuild
 
@@ -58,6 +59,111 @@ proc runCli*(): int =
         let buildResult = runBuild(raw)
         if buildResult.isErr:
           let e = buildResult.error()
+          stderr.writeLine(e.displayMessage())
+          status = e.exitCode()
+
+
+    command("pack-lxc-dir"):
+      help("Build a .lxcpkg archive from an LXC directory created by lxc-create")
+
+      option("--lxc-dir", help = "LXC container directory containing config and rootfs")
+      option("-o", "--output", help = "Output .lxcpkg file")
+      option("--package-id", help = "Package ID, for example com.example.app")
+      option("--name", help = "Package name")
+      option("--version", help = "Package version")
+      option("--arch", choices = @["armhf", "aarch64"], help = "Target architecture")
+      option("--rootfs-mode", choices = @["persistent", "volatile", "snapshot"], help = "Initial rootfs overlay mode")
+      option("--compression", default = some("zstd"), choices = @["zstd", "xz", "gzip", "lz4", "lzo"], help = "Squashfs compression")
+      option("--block-size", default = some("1M"), help = "Squashfs block size")
+      option("--data", multiple = true, help = "Data mount: name:target[:uid-or-user[:gid-or-group[:mode]]]")
+      option("--exclude", multiple = true, help = "Additional mksquashfs exclude pattern")
+      option("--normalize", default = some("none"), choices = @["none", "product"], help = "Rootfs normalize profile")
+      option("--minimize", default = some("none"), choices = @["none", "auto", "alpine", "debian"], help = "Rootfs minimize profile")
+      option("--network-mode", default = some("dhcp"), choices = @["dhcp", "host-configured"], help = "Rootfs network startup mode")
+      flag("--keep-workdir", help = "Keep temporary build directory after successful build")
+      flag("-f", "--force", help = "Overwrite output file")
+      flag("-v", "--verbose", help = "Show external commands")
+
+      run:
+        let raw = RawPackLxcDirOptions(
+          lxcDir: opts.lxc_dir_opt,
+          output: opts.output_opt,
+          packageId: opts.package_id_opt,
+          name: opts.name_opt,
+          version: opts.version_opt,
+          arch: opts.arch_opt,
+          rootfsMode: opts.rootfs_mode_opt,
+          compression: some(opts.compression),
+          blockSize: some(opts.block_size),
+          data: opts.data,
+          exclude: opts.exclude,
+          normalize: some(opts.normalize),
+          minimize: some(opts.minimize),
+          networkMode: some(opts.network_mode),
+          force: opts.force,
+          verbose: opts.verbose,
+          keepWorkdir: opts.keep_workdir
+        )
+
+        let packResult = runPackLxcDir(raw)
+        if packResult.isErr:
+          let e = packResult.error()
+          stderr.writeLine(e.displayMessage())
+          status = e.exitCode()
+
+    command("build-download"):
+      help("Download an LXC image with lxc-create -t download and build a .lxcpkg archive")
+
+      option("--dist", help = "Distribution name, for example alpine, debian, ubuntu, fedora")
+      option("--release", help = "Distribution release, for example 3.23, trixie, noble, 44")
+      option("--arch", choices = @["armhf", "arm64", "aarch64", "armv7", "armv7l"], help = "Target architecture")
+      option("--bits", choices = @["32", "64"], help = "Target ARM width; 64 maps to arm64, 32 maps to armhf")
+      option("-o", "--output", help = "Output .lxcpkg file")
+      option("--package-id", help = "Package ID, for example com.example.app")
+      option("--name", help = "Package name")
+      option("--version", help = "Package version")
+      option("--rootfs-mode", choices = @["persistent", "volatile", "snapshot"], help = "Initial rootfs overlay mode")
+      option("--compression", default = some("zstd"), choices = @["zstd", "xz", "gzip", "lz4", "lzo"], help = "Squashfs compression")
+      option("--block-size", default = some("1M"), help = "Squashfs block size")
+      option("--data", multiple = true, help = "Data mount: name:target[:uid-or-user[:gid-or-group[:mode]]]")
+      option("--exclude", multiple = true, help = "Additional mksquashfs exclude pattern")
+      option("--normalize", default = some("product"), choices = @["none", "product"], help = "Rootfs normalize profile")
+      option("--minimize", default = some("auto"), choices = @["none", "auto", "alpine", "debian"], help = "Rootfs minimize profile")
+      option("--network-mode", default = some("dhcp"), choices = @["dhcp", "host-configured"], help = "Rootfs network startup mode")
+      option("--work-dir", help = "Parent directory for temporary download work directory; default is /var/tmp")
+      flag("--interactive", help = "Let lxc-download ask for missing distribution/release information")
+      flag("--keep-workdir", help = "Keep temporary download/build directory after successful build")
+      flag("-f", "--force", help = "Overwrite output file")
+      flag("-v", "--verbose", help = "Show external commands")
+
+      run:
+        let raw = RawBuildDownloadOptions(
+          dist: opts.dist_opt,
+          release: opts.release_opt,
+          arch: opts.arch_opt,
+          bits: opts.bits_opt,
+          output: opts.output_opt,
+          packageId: opts.package_id_opt,
+          name: opts.name_opt,
+          version: opts.version_opt,
+          rootfsMode: opts.rootfs_mode_opt,
+          compression: some(opts.compression),
+          blockSize: some(opts.block_size),
+          data: opts.data,
+          exclude: opts.exclude,
+          normalize: some(opts.normalize),
+          minimize: some(opts.minimize),
+          networkMode: some(opts.network_mode),
+          interactive: opts.interactive,
+          workDir: opts.work_dir_opt,
+          keepWorkdir: opts.keep_workdir,
+          force: opts.force,
+          verbose: opts.verbose
+        )
+
+        let downloadResult = runBuildDownload(raw)
+        if downloadResult.isErr:
+          let e = downloadResult.error()
           stderr.writeLine(e.displayMessage())
           status = e.exitCode()
 
