@@ -13,6 +13,8 @@
 - data mount の owner / group / mode 設定
 - rootfs 内の `/etc/passwd` / `/etc/group` を使った user / group 名の解決
 - base `.lxcpkg` と WebUI から取得した `.lxcdev` を組み合わせた rebuild
+- Linux Containers Image Server から取得した rootfs の `.lxcpkg` 化
+- `lxc-create -t download` で作成済みの LXC directory からの `.lxcpkg` 化
 
 このツールは汎用 LXC パッケージャではありません。
 弊社機器の WebUI / AppServer の `.lxcpkg` 仕様に合わせた専用ツールです。
@@ -53,6 +55,12 @@ Archive:  Debian.lxcpkg
 - `mksquashfs`
 - `zip`
 
+`lxcpkg build-download` / `lxcpkg pack-lxc-dir` は、追加で以下の外部コマンドを使用します。
+
+- `lxc-create`
+- `lxc-download` template
+- `find`
+
 `lxcpkg rebuild` は追加で以下の外部コマンドを使用します。
 
 - `unzip`
@@ -64,9 +72,10 @@ Archive:  Debian.lxcpkg
 Debian / Ubuntu 系では、概ね以下で入ります。
 
 ```sh
-sudo apt install squashfs-tools zip unzip tar zstd mount
+sudo apt install squashfs-tools zip unzip tar zstd mount lxc lxc-templates
 ```
 
+`build-download` は `lxc-create -t download` を使って Linux Containers Image Server から rootfs を取得します。
 `rebuild` は squashfs の loop mount と overlayfs mount を行うため、Linux 上で root 権限が必要です。
 
 ---
@@ -194,6 +203,255 @@ CI や手順書に書く場合は、必要な option をすべて指定します
 
 --non-interactive
     不足項目があっても対話入力せず、エラー終了します。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary build directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
+---
+
+## build-download command
+
+`build-download` は、Linux Containers Image Server から rootfs を取得し、そのまま `.lxcpkg` を作成します。
+
+Image Server の index や URL 構造は `lxcpkg` では解釈せず、標準の `lxc-download` template に任せます。
+`lxcpkg` 側は、取得済み rootfs を製品向けの squashfs ベース `.lxcpkg` に変換することに集中します。
+
+### Alpine arm64 の例
+
+```sh
+sudo ./lxcpkg build-download \
+  --dist alpine \
+  --release 3.23 \
+  --bits 64 \
+  --name alpine3.23 \
+  --version 3.23 \
+  --output alpine3.23.lxcpkg \
+  --normalize product \
+  --minimize auto \
+  --network-mode host-configured
+```
+
+処理の概要は以下です。
+
+```text
+1. /var/tmp 配下に temporary work directory を作成
+2. lxc-create -t download で rootfs を取得
+3. 生成された LXC config から lxc.rootfs.path を読む
+4. rootfs に normalize / minimize / network profile を適用
+5. 既存の build flow で rootfs.sqfs と manifest.json を作成
+6. .lxcpkg archive を作成
+```
+
+### Debian / Ubuntu の例
+
+```sh
+sudo ./lxcpkg build-download \
+  --dist debian \
+  --release trixie \
+  --bits 64 \
+  --name DebianTrixie \
+  --version 13 \
+  --output DebianTrixie.lxcpkg \
+  --normalize product \
+  --minimize auto \
+  --network-mode dhcp
+```
+
+`--network-mode host-configured` は Alpine では default networking service を外します。
+Debian / Ubuntu / Fedora などの systemd 系 rootfs では、現時点では blindly に network service を無効化しません。
+
+### 対話モード
+
+`lxc-download` template の対話選択をそのまま使いたい場合は `--interactive` を指定します。
+
+```sh
+sudo ./lxcpkg build-download \
+  --interactive \
+  --bits 64 \
+  --name test \
+  --version 1.0.0 \
+  --output test.lxcpkg \
+  --normalize product \
+  --minimize auto
+```
+
+`--interactive` では `lxc-create` の stdin / stdout / stderr を親端末に接続します。
+
+---
+
+## build-download command options
+
+```text
+--dist=DIST
+    Distribution name passed to lxc-download.
+    例: alpine, debian, ubuntu, fedora。
+
+--release=RELEASE
+    Distribution release passed to lxc-download.
+    例: 3.23, trixie, noble, 44。
+
+--bits=BITS
+    Target ARM bit width.
+    指定可能値: 64, 32。
+    64 は arm64、32 は armhf として lxc-download に渡します。
+
+--arch=ARCH
+    Target architecture.
+    指定可能値: arm64, aarch64, armhf, armv7, armv7l。
+    --bits と同時には指定できません。
+
+--interactive
+    lxc-download template の対話選択を使用します。
+
+--work-dir=PATH
+    Temporary work directory parent.
+    未指定時は /var/tmp。
+
+--normalize=PROFILE
+    Rootfs normalize profile.
+    指定可能値: none, product。
+    product では /etc/resolv.conf symlink 対策、machine-id 初期化、tmp/log 掃除を行います。
+
+--minimize=PROFILE
+    Rootfs minimize profile.
+    指定可能値: none, auto, alpine, debian。
+    auto は /etc/os-release を見て Alpine / Debian-like を判定します。
+
+--network-mode=MODE
+    Container network policy.
+    指定可能値: dhcp, host-configured。
+    dhcp は rootfs 側の初期設定を尊重します。
+    host-configured は host 側 LXC config から IP / DNS を注入する製品運用向けです。
+
+-o, --output=OUTPUT
+    Output .lxcpkg file.
+
+--package-id=PACKAGE_ID
+    Package ID.
+
+--name=NAME
+    Package name.
+
+--version=VERSION
+    Package version.
+
+--rootfs-mode=MODE
+    Initial rootfs overlay mode.
+    指定可能値: persistent, volatile, snapshot。
+
+--compression=COMPRESSION
+    Squashfs compression.
+
+--block-size=SIZE
+    Squashfs block size.
+
+--data=SPEC
+    Data mount specification.
+    複数指定可能。
+
+--exclude=PATTERN
+    Additional mksquashfs exclude pattern.
+    複数指定可能。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary work directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
+---
+
+## pack-lxc-dir command
+
+`pack-lxc-dir` は、既に作成済みの LXC directory から `.lxcpkg` を作成します。
+
+例えば、手元で次のように rootfs を取得済みの場合に使います。
+
+```sh
+sudo lxc-create -t download -P /var/tmp/lxcdownload -n alpine \
+  -- -a arm64 -d alpine -r 3.23
+```
+
+`.lxcpkg` 化は以下です。
+
+```sh
+sudo ./lxcpkg pack-lxc-dir \
+  --lxc-dir /var/tmp/lxcdownload/alpine \
+  --name alpine3.23 \
+  --version 3.23 \
+  --arch aarch64 \
+  --output alpine3.23.lxcpkg \
+  --normalize product \
+  --minimize auto \
+  --network-mode host-configured
+```
+
+`pack-lxc-dir` は `<lxc-dir>/config` を読み、`lxc.rootfs.path` から rootfs directory を見つけます。
+download template 由来の LXC config は製品側へそのまま持ち込まず、rootfs path の検出と source 情報の参考にだけ使います。
+
+---
+
+## pack-lxc-dir command options
+
+```text
+--lxc-dir=LXC_DIR
+    LXC directory containing config and rootfs.
+
+-o, --output=OUTPUT
+    Output .lxcpkg file.
+
+--package-id=PACKAGE_ID
+    Package ID.
+
+--name=NAME
+    Package name.
+
+--version=VERSION
+    Package version.
+
+--arch=ARCH
+    Target architecture.
+    指定可能値: armhf, aarch64。
+
+--rootfs-mode=MODE
+    Initial rootfs overlay mode.
+
+--normalize=PROFILE
+    Rootfs normalize profile.
+    指定可能値: none, product。
+
+--minimize=PROFILE
+    Rootfs minimize profile.
+    指定可能値: none, auto, alpine, debian。
+
+--network-mode=MODE
+    Container network policy.
+    指定可能値: dhcp, host-configured。
+
+--compression=COMPRESSION
+    Squashfs compression.
+
+--block-size=SIZE
+    Squashfs block size.
+
+--data=SPEC
+    Data mount specification.
+    複数指定可能。
+
+--exclude=PATTERN
+    Additional mksquashfs exclude pattern.
+    複数指定可能。
 
 -f, --force
     既存 output file を上書きします。
