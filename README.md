@@ -14,6 +14,7 @@
 - rootfs 内の `/etc/passwd` / `/etc/group` を使った user / group 名の解決
 - base `.lxcpkg` と WebUI から取得した `.lxcdev` を組み合わせた rebuild
 - Linux Containers Image Server から取得した rootfs の `.lxcpkg` 化
+- rootfs tarball からの `.lxcpkg` 化
 - `lxc-create -t download` で作成済みの LXC directory からの `.lxcpkg` 化
 
 このツールは汎用 LXC パッケージャではありません。
@@ -55,10 +56,11 @@ Archive:  Debian.lxcpkg
 - `mksquashfs`
 - `zip`
 
-`lxcpkg build-download` / `lxcpkg pack-lxc-dir` は、追加で以下の外部コマンドを使用します。
+`lxcpkg build-download` / `lxcpkg build-tarball` / `lxcpkg pack-lxc-dir` は、追加で以下の外部コマンドを使用します。
 
 - `lxc-create`
 - `lxc-download` template
+- `tar`
 - `bubblewrap` (`bwrap`)
 - `find`
 
@@ -83,7 +85,7 @@ sudo apt install squashfs-tools zip unzip tar zstd mount lxc lxc-templates bubbl
 
 ### Rootfs cleanup safety
 
-`build-download` / `pack-lxc-dir` の normalize / minimize 処理は、rootfs の中身を実際に変更します。
+`build-download` / `build-tarball` / `pack-lxc-dir` の normalize / minimize 処理は、rootfs の中身を実際に変更します。
 そのため、`lxcpkg` は cache / log / tmp などを掃除するときに、ホストの mount namespace 上で直接 `rm -rf` 相当の操作を行いません。
 
 破壊的な処理は `bubblewrap` sandbox 内で実行します。
@@ -393,6 +395,101 @@ sudo ./lxcpkg build-download \
 ```
 
 ---
+
+## build-tarball command
+
+`build-tarball` は、既に手元にある rootfs tarball から `.lxcpkg` を作成します。
+
+`build-download` は `lxc-create -t download` が使える環境向けですが、CI や社内ミラー、手動ダウンロード済みの `rootfs.tar.xz` / `rootfs.tar.zst` / `rootfs.tar.gz` を使いたい場合は `build-tarball` のほうが単純です。
+
+### 例
+
+```sh
+sudo ./lxcpkg build-tarball   --tarball rootfs.tar.xz   --name alpine3.23   --version 3.23   --arch aarch64   --output alpine3.23.lxcpkg   --normalize product   --minimize auto   --network-mode host-configured
+```
+
+処理の概要は以下です。
+
+```text
+1. /var/tmp 配下に temporary work directory を作成
+2. tarball を rootfs-extract directory に展開
+3. archive root または単一の top-level directory から rootfs を検出
+4. bwrap sandbox 内で rootfs に normalize / minimize / network profile を適用
+5. 既存の build flow で rootfs.sqfs と manifest.json を作成
+6. .lxcpkg archive を作成
+```
+
+rootfs tarball は、archive root に `etc/passwd` と `etc/group` がある形式、または単一の top-level directory の下に rootfs がある形式を想定します。
+
+### build-tarball command options
+
+```text
+--tarball=TARBALL
+    Rootfs tarball.
+    例: rootfs.tar.xz, rootfs.tar.zst, rootfs.tar.gz, rootfs.tar.bz2。
+
+--work-dir=PATH
+    Temporary extraction work directory parent.
+    未指定時は /var/tmp。
+
+--normalize=PROFILE
+    Rootfs normalize profile.
+    指定可能値: none, product。
+    変更処理は bwrap sandbox 内で実行されます。
+
+--minimize=PROFILE
+    Rootfs minimize profile.
+    指定可能値: none, auto, alpine, debian。
+    cache / log / tmp の削除は bwrap sandbox 内で実行されます。
+
+--network-mode=MODE
+    Container network policy.
+    指定可能値: dhcp, host-configured。
+
+-o, --output=OUTPUT
+    Output .lxcpkg file.
+
+--package-id=PACKAGE_ID
+    Package ID.
+
+--name=NAME
+    Package name.
+
+--version=VERSION
+    Package version.
+
+--arch=ARCH
+    Target architecture.
+    指定可能値: armhf, aarch64。
+
+--rootfs-mode=MODE
+    Initial rootfs overlay mode.
+    指定可能値: persistent, volatile, snapshot。
+
+--compression=COMPRESSION
+    Squashfs compression.
+
+--block-size=SIZE
+    Squashfs block size.
+
+--data=SPEC
+    Data mount specification.
+    複数指定可能。
+
+--exclude=PATTERN
+    Additional mksquashfs exclude pattern.
+    複数指定可能。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary work directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
 
 ## pack-lxc-dir command
 

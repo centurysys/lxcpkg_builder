@@ -7,6 +7,7 @@ import argparse
 import results
 
 import build
+import build_tarball
 import delta
 import download_build
 import errors
@@ -164,6 +165,57 @@ proc runCli*(): int =
         let downloadResult = runBuildDownload(raw)
         if downloadResult.isErr:
           let e = downloadResult.error()
+          stderr.writeLine(e.displayMessage())
+          status = e.exitCode()
+
+
+    command("build-tarball"):
+      help("Extract a rootfs tarball and build a .lxcpkg archive")
+
+      option("--tarball", help = "Rootfs tarball, for example rootfs.tar.xz, rootfs.tar.zst, or rootfs.tar.gz")
+      option("-o", "--output", help = "Output .lxcpkg file")
+      option("--package-id", help = "Package ID, for example com.example.app")
+      option("--name", help = "Package name")
+      option("--version", help = "Package version")
+      option("--arch", choices = @["armhf", "aarch64"], help = "Target architecture")
+      option("--rootfs-mode", choices = @["persistent", "volatile", "snapshot"], help = "Initial rootfs overlay mode")
+      option("--compression", default = some("zstd"), choices = @["zstd", "xz", "gzip", "lz4", "lzo"], help = "Squashfs compression")
+      option("--block-size", default = some("1M"), help = "Squashfs block size")
+      option("--data", multiple = true, help = "Data mount: name:target[:uid-or-user[:gid-or-group[:mode]]]")
+      option("--exclude", multiple = true, help = "Additional mksquashfs exclude pattern")
+      option("--normalize", default = some("product"), choices = @["none", "product"], help = "Rootfs normalize profile")
+      option("--minimize", default = some("auto"), choices = @["none", "auto", "alpine", "debian"], help = "Rootfs minimize profile")
+      option("--network-mode", default = some("dhcp"), choices = @["dhcp", "host-configured"], help = "Rootfs network startup mode")
+      option("--work-dir", help = "Parent directory for temporary extraction work directory; default is /var/tmp")
+      flag("--keep-workdir", help = "Keep temporary extraction/build directory after successful build")
+      flag("-f", "--force", help = "Overwrite output file")
+      flag("-v", "--verbose", help = "Show external commands")
+
+      run:
+        let raw = RawBuildTarballOptions(
+          tarball: opts.tarball_opt,
+          output: opts.output_opt,
+          packageId: opts.package_id_opt,
+          name: opts.name_opt,
+          version: opts.version_opt,
+          arch: opts.arch_opt,
+          rootfsMode: opts.rootfs_mode_opt,
+          compression: some(opts.compression),
+          blockSize: some(opts.block_size),
+          data: opts.data,
+          exclude: opts.exclude,
+          normalize: some(opts.normalize),
+          minimize: some(opts.minimize),
+          networkMode: some(opts.network_mode),
+          workDir: opts.work_dir_opt,
+          keepWorkdir: opts.keep_workdir,
+          force: opts.force,
+          verbose: opts.verbose
+        )
+
+        let tarballResult = runBuildTarball(raw)
+        if tarballResult.isErr:
+          let e = tarballResult.error()
           stderr.writeLine(e.displayMessage())
           status = e.exitCode()
 
