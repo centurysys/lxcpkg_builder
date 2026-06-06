@@ -59,6 +59,7 @@ Archive:  Debian.lxcpkg
 
 - `lxc-create`
 - `lxc-download` template
+- `bubblewrap` (`bwrap`)
 - `find`
 
 `lxcpkg rebuild` は追加で以下の外部コマンドを使用します。
@@ -72,11 +73,30 @@ Archive:  Debian.lxcpkg
 Debian / Ubuntu 系では、概ね以下で入ります。
 
 ```sh
-sudo apt install squashfs-tools zip unzip tar zstd mount lxc lxc-templates
+sudo apt install squashfs-tools zip unzip tar zstd mount lxc lxc-templates bubblewrap
 ```
 
 `build-download` は `lxc-create -t download` を使って Linux Containers Image Server から rootfs を取得します。
+`--normalize` / `--minimize` / `--network-mode host-configured` による rootfs 変更は `bwrap` 内で実行します。ホスト側 `/` は read-only、対象 rootfs だけを read-write で bind mount するため、掃除処理が誤ってホスト rootfs を破壊するリスクを抑えます。
 `rebuild` は squashfs の loop mount と overlayfs mount を行うため、Linux 上で root 権限が必要です。
+
+
+### Rootfs cleanup safety
+
+`build-download` / `pack-lxc-dir` の normalize / minimize 処理は、rootfs の中身を実際に変更します。
+そのため、`lxcpkg` は cache / log / tmp などを掃除するときに、ホストの mount namespace 上で直接 `rm -rf` 相当の操作を行いません。
+
+破壊的な処理は `bubblewrap` sandbox 内で実行します。
+
+```text
+host /      -> sandbox /      read-only
+target rootfs -> sandbox /mnt  read-write
+```
+
+この構成により、仮に rootfs 内に予期しない symlink があっても、ホスト側 rootfs は read-only として見えるため、掃除処理がホスト側の `/etc`, `/var`, `/usr` などを削除する事故を避けやすくなります。
+
+`bwrap` が無い環境では、normalize / minimize / host-configured network profile は失敗します。
+これは意図した挙動です。安全性を落としてホスト namespace で直接掃除する fallback は用意していません。
 
 ---
 
@@ -244,7 +264,7 @@ sudo ./lxcpkg build-download \
 1. /var/tmp 配下に temporary work directory を作成
 2. lxc-create -t download で rootfs を取得
 3. 生成された LXC config から lxc.rootfs.path を読む
-4. rootfs に normalize / minimize / network profile を適用
+4. bwrap sandbox 内で rootfs に normalize / minimize / network profile を適用
 5. 既存の build flow で rootfs.sqfs と manifest.json を作成
 6. .lxcpkg archive を作成
 ```
@@ -318,11 +338,13 @@ sudo ./lxcpkg build-download \
     Rootfs normalize profile.
     指定可能値: none, product。
     product では /etc/resolv.conf symlink 対策、machine-id 初期化、tmp/log 掃除を行います。
+    変更処理は bwrap sandbox 内で実行されます。
 
 --minimize=PROFILE
     Rootfs minimize profile.
     指定可能値: none, auto, alpine, debian。
     auto は /etc/os-release を見て Alpine / Debian-like を判定します。
+    cache / log / tmp の削除は bwrap sandbox 内で実行されます。
 
 --network-mode=MODE
     Container network policy.

@@ -1,8 +1,10 @@
 # Product-oriented rootfs normalization and minimization helpers.
 #
-# These helpers are intentionally conservative. They only touch well-known
-# files below a validated rootfs directory and are used by build-download /
-# pack-lxc-dir before the rootfs is converted into rootfs.sqfs.
+# These helpers are intentionally conservative. Any destructive operation is
+# executed inside a bubblewrap sandbox: the host root filesystem is mounted
+# read-only, and only the target rootfs is mounted read-write at /mnt. This
+# prevents cleanup rules from deleting files on the host even when rootfs paths
+# contain unexpected symlinks or bad input.
 
 import std/os
 import std/osproc
@@ -32,6 +34,9 @@ type
     id*: string
     idLike*: seq[string]
     versionId*: string
+
+const
+  sandboxRoot = "/mnt"
 
 proc parseNormalizeProfile*(text: string): LxResult[NormalizeProfile] =
   case text.strip().toLowerAscii()
@@ -70,24 +75,59 @@ proc parseNetworkMode*(text: string): LxResult[NetworkMode] =
       invalidArgument("invalid network mode", "allowed values: dhcp, host-configured")
     )
 
-proc checkedPath(rootfs, relativePath: string): LxResult[string] =
-  if rootfs.len == 0 or rootfs == "/":
-    return LxResult[string].err(invalidRootfs("refusing to modify unsafe rootfs", rootfs))
-
+proc normalizeRelativePath(relativePath: string): LxResult[string] =
   if relativePath.len == 0 or relativePath.startsWith("/"):
     return LxResult[string].err(invalidArgument("unsafe rootfs path", relativePath))
 
-  let normalized = relativePath.replace('\\', '/').normalizedPath()
-  for part in normalized.split('/'):
+  let slashPath = relativePath.replace('\\', '/')
+  for part in slashPath.split('/'):
     if part == "..":
       return LxResult[string].err(invalidArgument("unsafe rootfs path", relativePath))
 
+  let normalized = slashPath.normalizedPath()
+  if normalized.len == 0 or normalized == ".":
+    return LxResult[string].err(invalidArgument("unsafe rootfs path", relativePath))
+
+  result = LxResult[string].ok(normalized)
+
+proc checkedPath(rootfs, relativePath: string): LxResult[string] =
+  let rel = normalizeRelativePath(relativePath)
+  if rel.isErr:
+    return LxResult[string].err(rel.error())
+
+  if rootfs.len == 0 or rootfs == "/":
+    return LxResult[string].err(invalidRootfs("refusing to use unsafe rootfs", rootfs))
+
   let rootAbs = absolutePath(rootfs).normalizedPath()
-  let path = absolutePath(rootfs / normalized).normalizedPath()
+  if rootAbs == "/":
+    return LxResult[string].err(invalidRootfs("refusing to use host rootfs", rootfs))
+
+  let path = absolutePath(rootAbs / rel.get()).normalizedPath()
   if path != rootAbs and not path.startsWith(rootAbs / ""):
     return LxResult[string].err(invalidArgument("rootfs path escapes root", relativePath))
 
   result = LxResult[string].ok(path)
+
+proc sandboxPath(relativePath: string): LxResult[string] =
+  let rel = normalizeRelativePath(relativePath)
+  if rel.isErr:
+    return LxResult[string].err(rel.error())
+
+  result = LxResult[string].ok(sandboxRoot / rel.get())
+
+proc validateSandboxRootfs(rootfs: string): LxResult[string] =
+  if rootfs.len == 0:
+    return LxResult[string].err(invalidRootfs("rootfs path is empty"))
+
+  let rootAbs = absolutePath(rootfs).normalizedPath()
+  if rootAbs == "/":
+    return LxResult[string].err(invalidRootfs("refusing to modify host rootfs", rootfs))
+  if symlinkExists(rootAbs):
+    return LxResult[string].err(invalidRootfs("refusing to modify symlink rootfs", rootfs))
+  if not dirExists(rootAbs):
+    return LxResult[string].err(invalidRootfs("rootfs directory does not exist", rootfs))
+
+  result = LxResult[string].ok(rootAbs)
 
 proc readProcessOutput(process: Process): LxResult[string] =
   try:
@@ -126,63 +166,56 @@ proc runCommand(command: string; args: seq[string]; verbose: bool): LxResult[voi
 
   result = LxResult[void].ok()
 
-proc clearDirContents(rootfs, relativePath: string; verbose: bool): LxResult[void] =
-  let dirResult = checkedPath(rootfs, relativePath)
-  if dirResult.isErr:
-    return LxResult[void].err(dirResult.error())
+proc runSandboxCommand(rootfs, command: string; args: seq[string]; verbose: bool): LxResult[void] =
+  let rootAbs = validateSandboxRootfs(rootfs)
+  if rootAbs.isErr:
+    return LxResult[void].err(rootAbs.error())
 
-  let dir = dirResult.get()
-  if not dirExists(dir):
-    return LxResult[void].ok()
+  let bwrap = findExe("bwrap")
+  if bwrap.len == 0:
+    return LxResult[void].err(externalToolMissing("bwrap"))
+
+  # The destination /mnt already exists in normal host roots, so the target
+  # rootfs can be mounted there without creating writable directories outside
+  # the sandbox. The original host / is visible read-only; only /mnt is rw.
+  var bwrapArgs = @[
+    "--die-with-parent",
+    "--unshare-all",
+    "--ro-bind", "/", "/",
+    "--bind", rootAbs.get(), sandboxRoot,
+    command
+  ]
+  bwrapArgs.add(args)
+
+  result = runCommand(bwrap, bwrapArgs, verbose)
+
+proc clearDirContents(rootfs, relativePath: string; verbose: bool): LxResult[void] =
+  let target = sandboxPath(relativePath)
+  if target.isErr:
+    return LxResult[void].err(target.error())
 
   let find = findExe("find")
   if find.len == 0:
     return LxResult[void].err(externalToolMissing("find"))
 
-  result = runCommand(find, @[dir, "-xdev", "-mindepth", "1", "-delete"], verbose)
+  let script = "target=$1; find_cmd=$2; if [ -d \"$target\" ]; then exec \"$find_cmd\" \"$target\" -xdev -mindepth 1 -delete; fi"
+  result = runSandboxCommand(rootfs, "/bin/sh", @["-eu", "-c", script, "sh", target.get(), find], verbose)
 
-proc removePathIfExists(rootfs, relativePath: string): LxResult[void] =
-  let pathResult = checkedPath(rootfs, relativePath)
-  if pathResult.isErr:
-    return LxResult[void].err(pathResult.error())
+proc removePathIfExists(rootfs, relativePath: string; verbose = false): LxResult[void] =
+  let target = sandboxPath(relativePath)
+  if target.isErr:
+    return LxResult[void].err(target.error())
 
-  let path = pathResult.get()
-  try:
-    if symlinkExists(path) or fileExists(path):
-      removeFile(path)
-    elif dirExists(path):
-      removeDir(path)
-  except OSError as e:
-    return LxResult[void].err(ioError("failed to remove rootfs path", &"{relativePath}: {e.msg}"))
+  let script = "target=$1; if [ -L \"$target\" ] || [ -f \"$target\" ]; then rm -f \"$target\"; elif [ -d \"$target\" ]; then rmdir \"$target\"; fi"
+  result = runSandboxCommand(rootfs, "/bin/sh", @["-eu", "-c", script, "sh", target.get()], verbose)
 
-  result = LxResult[void].ok()
+proc writeRootfsFile(rootfs, relativePath, content: string; verbose = false): LxResult[void] =
+  let target = sandboxPath(relativePath)
+  if target.isErr:
+    return LxResult[void].err(target.error())
 
-proc ensureParentDir(path: string): LxResult[void] =
-  try:
-    createDir(path.parentDir())
-    result = LxResult[void].ok()
-  except OSError as e:
-    result = LxResult[void].err(ioError("failed to create rootfs directory", e.msg))
-
-proc writeRootfsFile(rootfs, relativePath, content: string): LxResult[void] =
-  let pathResult = checkedPath(rootfs, relativePath)
-  if pathResult.isErr:
-    return LxResult[void].err(pathResult.error())
-
-  let path = pathResult.get()
-  let parentCreated = ensureParentDir(path)
-  if parentCreated.isErr:
-    return parentCreated
-
-  try:
-    if symlinkExists(path):
-      removeFile(path)
-    writeFile(path, content)
-    result = LxResult[void].ok()
-  except IOError as e:
-    result = LxResult[void].err(ioError("failed to write rootfs file", &"{relativePath}: {e.msg}"))
-  except OSError as e:
-    result = LxResult[void].err(ioError("failed to write rootfs file", &"{relativePath}: {e.msg}"))
+  let script = "target=$1; content=$2; parent=${target%/*}; mkdir -p \"$parent\"; if [ -L \"$target\" ]; then rm -f \"$target\"; fi; printf '%s' \"$content\" > \"$target\""
+  result = runSandboxCommand(rootfs, "/bin/sh", @["-eu", "-c", script, "sh", target.get(), content], verbose)
 
 proc unquoteOsReleaseValue(value: string): string =
   result = value.strip()
@@ -236,6 +269,10 @@ proc isDebianLike(osrel: OsRelease): bool =
     osrel.idLike.contains("debian") or osrel.idLike.contains("ubuntu")
 
 proc normalizeProduct*(rootfs: string; verbose = false): LxResult[void] =
+  let sandboxReady = validateSandboxRootfs(rootfs)
+  if sandboxReady.isErr:
+    return LxResult[void].err(sandboxReady.error())
+
   let resolv = checkedPath(rootfs, "etc/resolv.conf")
   if resolv.isErr:
     return LxResult[void].err(resolv.error())
@@ -243,19 +280,18 @@ proc normalizeProduct*(rootfs: string; verbose = false): LxResult[void] =
   try:
     if symlinkExists(resolv.get()):
       if verbose:
-        echo "Replacing symlink /etc/resolv.conf with a regular file"
-      removeFile(resolv.get())
-      let written = writeRootfsFile(rootfs, "etc/resolv.conf", "# Managed by host LXC configuration\n")
+        echo "Replacing symlink /etc/resolv.conf with a regular file inside bubblewrap sandbox"
+      let written = writeRootfsFile(rootfs, "etc/resolv.conf", "# Managed by host LXC configuration\n", verbose)
       if written.isErr:
         return written
   except OSError as e:
     return LxResult[void].err(ioError("failed to normalize /etc/resolv.conf", e.msg))
 
-  let scrubMachineId = writeRootfsFile(rootfs, "etc/machine-id", "")
+  let scrubMachineId = writeRootfsFile(rootfs, "etc/machine-id", "", verbose)
   if scrubMachineId.isErr:
     return scrubMachineId
 
-  let dbusMachineIdRemoved = removePathIfExists(rootfs, "var/lib/dbus/machine-id")
+  let dbusMachineIdRemoved = removePathIfExists(rootfs, "var/lib/dbus/machine-id", verbose)
   if dbusMachineIdRemoved.isErr:
     return dbusMachineIdRemoved
 
@@ -275,8 +311,6 @@ proc minimizeAlpine*(rootfs: string; verbose = false): LxResult[void] =
   result = LxResult[void].ok()
 
 proc minimizeDebian*(rootfs: string; verbose = false): LxResult[void] =
-  discard verbose
-
   let aptConf = """
 APT::Install-Recommends "false";
 APT::Install-Suggests "false";
@@ -293,11 +327,11 @@ path-exclude=/usr/share/linda/*
 path-exclude=/usr/share/locale/*
 """.strip() & "\n"
 
-  let aptWritten = writeRootfsFile(rootfs, "etc/apt/apt.conf.d/99-lxcpkg-minimize", aptConf)
+  let aptWritten = writeRootfsFile(rootfs, "etc/apt/apt.conf.d/99-lxcpkg-minimize", aptConf, verbose)
   if aptWritten.isErr:
     return aptWritten
 
-  let dpkgWritten = writeRootfsFile(rootfs, "etc/dpkg/dpkg.cfg.d/99-lxcpkg-minimize", dpkgConf)
+  let dpkgWritten = writeRootfsFile(rootfs, "etc/dpkg/dpkg.cfg.d/99-lxcpkg-minimize", dpkgConf, verbose)
   if dpkgWritten.isErr:
     return dpkgWritten
 
@@ -337,8 +371,8 @@ proc applyHostConfiguredNetwork*(rootfs: string; verbose = false): LxResult[void
 
   if isAlpine(osrel.get()):
     if verbose:
-      echo "Disabling Alpine default networking service for host-configured network mode"
-    return removePathIfExists(rootfs, "etc/runlevels/default/networking")
+      echo "Disabling Alpine default networking service inside bubblewrap sandbox"
+    return removePathIfExists(rootfs, "etc/runlevels/default/networking", verbose)
 
   # Other distributions are intentionally left unchanged for now. Fedora and
   # full systemd distros have several possible network managers, and blindly
@@ -352,6 +386,11 @@ proc applyRootfsProfiles*(
     networkMode: NetworkMode,
     verbose = false
 ): LxResult[void] =
+  if normalize != npNone or minimize != mpNone or networkMode == nmHostConfigured:
+    let sandboxReady = validateSandboxRootfs(rootfs)
+    if sandboxReady.isErr:
+      return LxResult[void].err(sandboxReady.error())
+
   if normalize == npProduct:
     let normalized = normalizeProduct(rootfs, verbose)
     if normalized.isErr:

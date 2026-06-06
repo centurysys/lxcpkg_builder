@@ -16,7 +16,6 @@ import results
 import build
 import errors
 import rootfs_tune
-import types
 
 type
   DownloadArchitecture = object
