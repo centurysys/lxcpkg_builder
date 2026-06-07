@@ -98,7 +98,12 @@ proc printBuildDownloadSummary(opts: RawBuildDownloadOptions; name: string; lxcA
 
   echo "lxcpkg build-download:"
   if opts.interactive:
-    echo &"  image:        interactive, arch={lxcArch}"
+    var image = &"interactive, arch={lxcArch}"
+    if opts.dist.isSome and opts.dist.get().len > 0:
+      image.add(&", dist={opts.dist.get()}")
+    if opts.release.isSome and opts.release.get().len > 0:
+      image.add(&", release={opts.release.get()}")
+    echo &"  image:        {image}"
   else:
     echo &"  image:        {opts.dist.get()}/{opts.release.get()}/{lxcArch}"
   echo &"  name:         {name}"
@@ -291,6 +296,8 @@ proc resolveProfiles(
 proc runPackLxcDir*(opts: RawPackLxcDirOptions): LxResult[void] =
   if opts.lxcDir.isNone or opts.lxcDir.get().len == 0:
     return LxResult[void].err(missingArgument("--lxc-dir"))
+  if opts.output.isNone or opts.output.get().len == 0:
+    return LxResult[void].err(missingArgument("--output"))
 
   let lxcDir = absolutePath(opts.lxcDir.get())
   let rootfsPath = resolveLxcRootfsPath(lxcDir)
@@ -353,6 +360,12 @@ proc runLxcDownload(opts: RawBuildDownloadOptions; workDir, tmpName, lxcArch: st
     if lxcArch.len > 0:
       args.add("-a")
       args.add(lxcArch)
+    if opts.dist.isSome and opts.dist.get().len > 0:
+      args.add("-d")
+      args.add(opts.dist.get())
+    if opts.release.isSome and opts.release.get().len > 0:
+      args.add("-r")
+      args.add(opts.release.get())
   else:
     if opts.dist.isNone or opts.dist.get().len == 0:
       return LxResult[void].err(missingArgument("--dist"))
@@ -370,6 +383,9 @@ proc runLxcDownload(opts: RawBuildDownloadOptions; workDir, tmpName, lxcArch: st
   result = runCommand(lxcCreate.get(), args, opts.verbose, opts.interactive)
 
 proc runBuildDownload*(opts: RawBuildDownloadOptions): LxResult[void] =
+  if opts.output.isNone or opts.output.get().len == 0:
+    return LxResult[void].err(missingArgument("--output"))
+
   let arch = parseDownloadArchitecture(opts.arch, opts.bits)
   if arch.isErr:
     return LxResult[void].err(arch.error())

@@ -244,6 +244,8 @@ proc findExtractedRootfs(extractDir: string): LxResult[string] =
 proc runBuildTarball*(opts: RawBuildTarballOptions): LxResult[void] =
   if opts.tarball.isNone or opts.tarball.get().len == 0:
     return LxResult[void].err(missingArgument("--tarball"))
+  if opts.output.isNone or opts.output.get().len == 0:
+    return LxResult[void].err(missingArgument("--output"))
 
   let tarball = absolutePath(opts.tarball.get())
   if not fileExists(tarball):
