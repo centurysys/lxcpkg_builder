@@ -102,8 +102,17 @@ proc readElfMachine(path: string): LxResult[uint16] =
   result = LxResult[uint16].ok(readUint16(raw, 18, lsb))
 
 proc hasArmhfLoader(rootfs: string): bool =
+  ## Detect hard-float 32-bit ARM userlands.
+  ##
+  ## Debian/Ubuntu armhf rootfs images usually have the glibc loader
+  ## or arm-linux-gnueabihf library directories. Alpine armhf/armv7
+  ## images use musl instead, and lxc-download may record the LXC arch
+  ## as armv7 even though it is the hard-float ABI that lxcpkg treats
+  ## as armhf.
   result =
     fileExists(joinRootfs(rootfs, "/lib/ld-linux-armhf.so.3")) or
+    fileExists(joinRootfs(rootfs, "/lib/ld-musl-armhf.so.1")) or
+    fileExists(joinRootfs(rootfs, "/lib/ld-musl-armv7.so.1")) or
     dirExists(joinRootfs(rootfs, "/lib/arm-linux-gnueabihf")) or
     dirExists(joinRootfs(rootfs, "/usr/lib/arm-linux-gnueabihf"))
 
