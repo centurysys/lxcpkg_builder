@@ -16,6 +16,7 @@
 - Linux Containers Image Server から取得した rootfs の `.lxcpkg` 化
 - rootfs tarball からの `.lxcpkg` 化
 - `lxc-create -t download` で作成済みの LXC directory からの `.lxcpkg` 化
+- 既存 `.lxcpkg` の `packageId` / `name` / `version` metadata rewrite
 
 このツールは汎用 LXC パッケージャではありません。
 弊社機器の WebUI / AppServer の `.lxcpkg` 仕様に合わせた専用ツールです。
@@ -50,6 +51,13 @@ rootfs tarball
   -> lxcpkg build-tarball
 ```
 
+既存 `.lxcpkg` を新しい package lineage の起点として使いたい場合は、rootfs を再生成せずに metadata だけを書き換える `rewrite-metadata` を使えます。
+
+```text
+既存 .lxcpkg
+  -> lxcpkg rewrite-metadata
+```
+
 `.lxcpkg` を作成する各 command では、出力先を `--output` または `-o` で明示してください。
 `--output` が無い場合は、download / extract / squashfs 作成などの重い処理を開始する前にエラー終了します。
 
@@ -57,6 +65,7 @@ rootfs tarball
 
 ```text
 -o, --output       出力する .lxcpkg / .lxcdelta file
+-P, --package-id   package ID
 -n, --name         package name
 -V, --version      package version
 -a, --arch         target architecture
@@ -122,6 +131,11 @@ Archive:  Debian.lxcpkg
 - `mount`
 - `umount`
 
+`lxcpkg rewrite-metadata` は追加で以下の外部コマンドを使用します。
+
+- `unzip`
+- `zip`
+
 Debian / Ubuntu 系では、概ね以下で入ります。
 
 ```sh
@@ -131,6 +145,7 @@ sudo apt install squashfs-tools zip unzip tar zstd mount lxc lxc-templates bubbl
 `build-download` は `lxc-create -t download` を使って Linux Containers Image Server から rootfs を取得します。
 `--normalize` / `--minimize` / `--network-mode host-configured` による rootfs 変更は `bwrap` 内で実行します。ホスト側 `/` は read-only、対象 rootfs だけを read-write で bind mount するため、掃除処理が誤ってホスト rootfs を破壊するリスクを抑えます。
 `rebuild` は squashfs の loop mount と overlayfs mount を行うため、Linux 上で root 権限が必要です。
+`rewrite-metadata` は `.lxcpkg` の zip 展開と再作成だけを行うため、root 権限や mount は不要です。
 
 
 ### Rootfs cleanup safety
@@ -1193,6 +1208,7 @@ rootfs directory 自体は変更しません。
 
 `.lxcpkg` / `.lxcdelta` を作成する command では、`--output` または `-o` が必須です。
 指定が無い場合は、download / extract / squashfs 作成などを開始する前にエラー終了します。
+`rewrite-metadata` も既存 `.lxcpkg` とは別の出力先を必須とし、入力 file と同じ path への in-place rewrite は拒否します。
 
 既存 output file がある場合、`--force` なしではエラー終了します。
 
@@ -1220,6 +1236,8 @@ output file already exists: /path/to/Debian.lxcpkg
 `build` 中は `/tmp/lxcpkg-<pid>-<index>` のような temporary build directory を作成します。
 
 `rebuild` 中は `/tmp/lxcpkg-rebuild-<pid>-<index>` のような temporary rebuild directory を作成します。
+
+`rewrite-metadata` 中は `/tmp/lxcpkg-rewrite-metadata-<pid>-<index>` のような temporary rewrite-metadata directory を作成します。
 
 成功時:
 
@@ -1250,6 +1268,13 @@ Remove it manually after checking: rm -rf /tmp/lxcpkg-2707-0
 ```text
 Temporary rebuild directory was kept for inspection: /tmp/lxcpkg-rebuild-9682-0
 Remove it manually after checking: rm -rf /tmp/lxcpkg-rebuild-9682-0
+```
+
+`rewrite-metadata` の場合:
+
+```text
+Temporary rewrite-metadata directory was kept for inspection: /tmp/lxcpkg-rewrite-metadata-9682-0
+Remove it manually after checking: rm -rf /tmp/lxcpkg-rewrite-metadata-9682-0
 ```
 
 ---
@@ -1393,12 +1418,92 @@ data/Debian/from-user1 は残る
 
 ---
 
+## rewrite-metadata command
+
+`rewrite-metadata` は、既存 `.lxcpkg` の rootfs image を作り直さずに `manifest.json` の metadata だけを書き換え、新しい `.lxcpkg` を作成します。
+
+主な用途は、Debian / Alpine などの base package を元にして、HTTP server appliance や MODBUS appliance など、別 package lineage の初期パッケージを作りたい場合です。
+
+変更できる metadata は以下です。
+
+```text
+packageId
+name
+version
+```
+
+変更しないものは以下です。
+
+```text
+rootfs.sqfs
+rootfs.sqfs の SHA256
+arch
+rootfsMode
+dataMounts
+rootfs の中身
+```
+
+### 基本例
+
+```sh
+./lxcpkg rewrite-metadata \
+  --input debian-trixie-base.lxcpkg \
+  --output http-appliance-1.0.0.lxcpkg \
+  --package-id com.example.http-appliance \
+  --name http-appliance \
+  --version 1.0.0
+```
+
+この例では、元の rootfs はそのまま使い、manifest 上の package identity だけを新しい HTTP server appliance 用に変更します。
+
+`packageId` を変更すると、更新系列が変わります。新しい `packageId` に書き換えた `.lxcpkg` は、旧 `packageId` でインストール済みのインスタンスに対する `replace-base` 用更新パッケージとしては使えません。これは、意図しない別系列 package への更新を防ぐための挙動です。
+
+既存インスタンスを更新したい場合は、既存インスタンスの `packageId` と一致する `.lxcpkg` を作成してください。新規 appliance として心機一転したい場合は、`packageId`, `name`, `version` をまとめて変更する使い方を推奨します。
+
+### rewrite-metadata command options
+
+```text
+-i, --input=INPUT
+    Input .lxcpkg file. 必須。
+
+-o, --output=OUTPUT
+    Output .lxcpkg file. 必須。
+    入力と同じ path への in-place rewrite は拒否します。
+
+-P, --package-id=PACKAGE_ID
+    New package ID.
+    指定した場合、manifest.json の packageId をこの値に変更します。
+
+-n, --name=NAME
+    New package name.
+    指定した場合、manifest.json の name をこの値に変更します。
+
+-V, --version=VERSION
+    New package version.
+    指定した場合、manifest.json の version をこの値に変更します。
+
+-f, --force
+    既存 output file を上書きします。
+
+--keep-workdir
+    成功時も temporary rewrite-metadata directory を削除せず残します。
+
+-v, --verbose
+    実行する外部コマンドなどを表示します。
+```
+
+`--package-id`, `--name`, `--version` のうち少なくとも 1 つは指定してください。指定しなかった metadata は元の `.lxcpkg` の値を引き継ぎます。
+
+
+---
+
 ## 注意点
 
 - このツールは rootfs directory を作成するものではありません。
 - rootfs は事前に debootstrap / mmdebstrap / 手作業などで準備してください。
 - rootfs directory 自体は変更しません。
 - `rebuild` は Linux の overlayfs mount を使うため、Linux 上の root 権限が必要です。
+- `rewrite-metadata` は rootfs を変更せず、既存 `.lxcpkg` の manifest metadata だけを書き換えます。
 - `mksquashfs` / `zip` / `unzip` / `tar` / `zstd` / `mount` / `umount` は外部コマンドとして実行します。
 - 対応 architecture は `armhf` と `aarch64` のみです。
 - data mount target は AppServer 側の validation と合わせる必要があります。

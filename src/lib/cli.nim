@@ -12,6 +12,7 @@ import delta
 import download_build
 import errors
 import rebuild
+import rewrite_metadata
 
 proc runCli*(): int =
   var status = 0
@@ -315,6 +316,37 @@ proc runCli*(): int =
         let rebuildResult = runRebuild(raw)
         if rebuildResult.isErr:
           let e = rebuildResult.error()
+          stderr.writeLine(e.displayMessage())
+          status = e.exitCode()
+
+
+    command("rewrite-metadata"):
+      help("Rewrite manifest metadata in an existing .lxcpkg archive without rebuilding rootfs.sqfs")
+
+      option("-i", "--input", help = "Input .lxcpkg file")
+      option("-o", "--output", help = "Output .lxcpkg file")
+      option("-P", "--package-id", help = "New package ID")
+      option("-n", "--name", help = "New package name")
+      option("-V", "--version", help = "New package version")
+      flag("--keep-workdir", help = "Keep temporary rewrite-metadata directory after successful rewrite")
+      flag("-f", "--force", help = "Overwrite output file")
+      flag("-v", "--verbose", help = "Show external commands")
+
+      run:
+        let raw = RawRewriteMetadataOptions(
+          input: opts.input_opt,
+          output: opts.output_opt,
+          packageId: opts.package_id_opt,
+          name: opts.name_opt,
+          version: opts.version_opt,
+          force: opts.force,
+          verbose: opts.verbose,
+          keepWorkdir: opts.keep_workdir
+        )
+
+        let rewriteResult = runRewriteMetadata(raw)
+        if rewriteResult.isErr:
+          let e = rewriteResult.error()
           stderr.writeLine(e.displayMessage())
           status = e.exitCode()
 
