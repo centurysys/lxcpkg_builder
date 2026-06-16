@@ -286,6 +286,10 @@ proc runCli*(): int =
       option("-c", "--compression", default = some("zstd"), choices = @["zstd", "xz", "gzip", "lz4", "lzo"], help = "Squashfs compression")
       option("-B", "--block-size", default = some("1M"), help = "Squashfs block size")
       option("-e", "--exclude", multiple = true, help = "Additional mksquashfs exclude pattern")
+      flag("--no-clean", help = "Do not remove apt/cache/log/tmp files from the merged rootfs before creating rootfs.sqfs")
+      flag("--no-scrub", help = "Do not remove machine-id, SSH host keys, shell history, and other instance-specific files before creating rootfs.sqfs")
+      flag("--no-prune-empty-dirs", help = "Do not remove empty cleanup directories after release cleanup")
+      flag("--no-release-clean", help = "Disable the default release cleanup; equivalent to --no-clean --no-scrub --no-prune-empty-dirs")
       flag("--keep-workdir", help = "Keep temporary rebuild directory after successful rebuild")
       flag("-f", "--force", help = "Overwrite output file")
       flag("-v", "--verbose", help = "Show external commands")
@@ -300,6 +304,9 @@ proc runCli*(): int =
           compression: some(opts.compression),
           blockSize: some(opts.block_size),
           exclude: opts.exclude,
+          clean: not opts.no_clean and not opts.no_release_clean,
+          scrub: not opts.no_scrub and not opts.no_release_clean,
+          pruneEmptyDirs: not opts.no_prune_empty_dirs and not opts.no_release_clean,
           force: opts.force,
           verbose: opts.verbose,
           keepWorkdir: opts.keep_workdir

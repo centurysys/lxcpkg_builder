@@ -17,6 +17,7 @@ import std/times
 import results
 
 import archive
+import cleanup
 import devarchive
 import errors
 import manifest
@@ -37,6 +38,9 @@ type
     compression*: Option[string]
     blockSize*: Option[string]
     exclude*: seq[string]
+    clean*: bool
+    scrub*: bool
+    pruneEmptyDirs*: bool
     force*: bool
     verbose*: bool
     keepWorkdir*: bool
@@ -50,6 +54,9 @@ type
     compression*: Compression
     blockSize*: string
     extraExcludes*: seq[string]
+    clean*: bool
+    scrub*: bool
+    pruneEmptyDirs*: bool
     force*: bool
     verbose*: bool
     keepWorkdir*: bool
@@ -370,6 +377,9 @@ proc resolveRebuildOptions*(
     compression: compressionResult.get(),
     blockSize: blockSizeValue(opts),
     extraExcludes: opts.exclude,
+    clean: opts.clean,
+    scrub: opts.scrub,
+    pruneEmptyDirs: opts.pruneEmptyDirs,
     force: opts.force,
     verbose: opts.verbose,
     keepWorkdir: opts.keepWorkdir
@@ -595,6 +605,24 @@ proc setupMergedRootfs(
 
   result = LxResult[MountedRebuildRootfs].ok(paths)
 
+proc releaseCleanMergedRootfs(opts: RebuildOptions; mergedDir: string): LxResult[void] =
+  if opts.clean:
+    let cleanResult = cleanRootfsForPackage(mergedDir, opts.verbose)
+    if cleanResult.isErr:
+      return cleanResult
+
+  if opts.scrub:
+    let scrubResult = scrubRootfsForPackage(mergedDir, opts.verbose)
+    if scrubResult.isErr:
+      return scrubResult
+
+  if opts.pruneEmptyDirs:
+    let pruneResult = pruneEmptyDirsForPackage(mergedDir, opts.verbose)
+    if pruneResult.isErr:
+      return pruneResult
+
+  result = LxResult[void].ok()
+
 proc createRebuiltRootfsImage(
     opts: RebuildOptions,
     mergedDir, buildDir: string
@@ -668,6 +696,9 @@ proc printRebuildOptions(opts: RebuildOptions; baseManifest: PackageManifest) =
   echo &"  rootfsMode:      {opts.rootfsMode}"
   echo &"  compression:     {opts.compression}"
   echo &"  blockSize:       {opts.blockSize}"
+  echo &"  clean:           {opts.clean}"
+  echo &"  scrub:           {opts.scrub}"
+  echo &"  pruneEmptyDirs:  {opts.pruneEmptyDirs}"
   echo &"  force:           {opts.force}"
   echo &"  keepWorkdir:     {opts.keepWorkdir}"
   echo &"  verbose:         {opts.verbose}"
@@ -707,6 +738,14 @@ proc rebuildPackageSteps(raw: RawRebuildOptions; buildDir: string): LxResult[voi
 
   var cleanupResult = LxResult[void].ok()
   let mergedPaths = merged.get()
+
+  let releaseCleanResult = releaseCleanMergedRootfs(opts, mergedPaths.mergedDir)
+  if releaseCleanResult.isErr:
+    cleanupResult = cleanupMergedRootfs(mergedPaths, opts.verbose)
+    if cleanupResult.isErr:
+      return cleanupResult
+    return LxResult[void].err(releaseCleanResult.error())
+
   let imageResult = createRebuiltRootfsImage(opts, mergedPaths.mergedDir, buildDir)
   if imageResult.isErr:
     cleanupResult = cleanupMergedRootfs(mergedPaths, opts.verbose)
