@@ -17,6 +17,7 @@ import prompts
 import rootfs
 import rootfs_tune
 import squashfs
+import ssh_host_keys
 import types
 import validation
 
@@ -38,6 +39,7 @@ type
     networkMode*: Option[string]
     preset*: Option[string]
     nonInteractive*: bool
+    ensureSshHostKeys*: bool
     force*: bool
     verbose*: bool
     keepWorkdir*: bool
@@ -255,6 +257,7 @@ proc resolveBuildOptions*(opts: RawBuildOptions): LxResult[BuildOptions] =
     blockSize: blockSizeValue(opts),
     extraExcludes: opts.exclude,
     nonInteractive: opts.nonInteractive,
+    ensureSshHostKeys: opts.ensureSshHostKeys,
     force: opts.force,
     verbose: opts.verbose,
     keepWorkdir: opts.keepWorkdir
@@ -351,6 +354,7 @@ proc printResolvedOptions(buildOpts: BuildOptions; rawData: seq[string]) =
   echo &"  resolvedData:    {resolvedDataText}"
   echo &"  exclude:         {excludeText}"
   echo &"  nonInteractive:  {buildOpts.nonInteractive}"
+  echo &"  ensureSSHKeys:  {buildOpts.ensureSshHostKeys}"
   echo &"  force:           {buildOpts.force}"
   echo &"  keepWorkdir:     {buildOpts.keepWorkdir}"
   echo &"  verbose:         {buildOpts.verbose}"
@@ -453,5 +457,10 @@ proc runBuild*(opts: RawBuildOptions): LxResult[void] =
   let tuned = applyRequestedRootfsProfiles(opts, buildOpts.rootfsDir)
   if tuned.isErr:
     return LxResult[void].err(tuned.error())
+
+  if buildOpts.ensureSshHostKeys:
+    let sshDropIn = ensureSshHostKeyDropIn(buildOpts.rootfsDir, buildOpts.verbose)
+    if sshDropIn.isErr:
+      return LxResult[void].err(sshDropIn.error())
 
   result = buildPackage(buildOpts)

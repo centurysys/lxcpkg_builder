@@ -94,6 +94,7 @@ type
     blockSize*: string
     extraExcludes*: seq[string]
     nonInteractive*: bool
+    ensureSshHostKeys*: bool
     force*: bool
     verbose*: bool
     keepWorkdir*: bool

@@ -22,6 +22,7 @@ import devarchive
 import errors
 import manifest
 import squashfs
+import ssh_host_keys
 import types
 
 const
@@ -41,6 +42,7 @@ type
     clean*: bool
     scrub*: bool
     pruneEmptyDirs*: bool
+    ensureSshHostKeys*: bool
     force*: bool
     verbose*: bool
     keepWorkdir*: bool
@@ -57,6 +59,7 @@ type
     clean*: bool
     scrub*: bool
     pruneEmptyDirs*: bool
+    ensureSshHostKeys*: bool
     force*: bool
     verbose*: bool
     keepWorkdir*: bool
@@ -380,6 +383,7 @@ proc resolveRebuildOptions*(
     clean: opts.clean,
     scrub: opts.scrub,
     pruneEmptyDirs: opts.pruneEmptyDirs,
+    ensureSshHostKeys: opts.ensureSshHostKeys,
     force: opts.force,
     verbose: opts.verbose,
     keepWorkdir: opts.keepWorkdir
@@ -621,6 +625,11 @@ proc releaseCleanMergedRootfs(opts: RebuildOptions; mergedDir: string): LxResult
     if pruneResult.isErr:
       return pruneResult
 
+  if opts.ensureSshHostKeys:
+    let sshDropIn = ensureSshHostKeyDropIn(mergedDir, opts.verbose)
+    if sshDropIn.isErr:
+      return sshDropIn
+
   result = LxResult[void].ok()
 
 proc createRebuiltRootfsImage(
@@ -699,6 +708,7 @@ proc printRebuildOptions(opts: RebuildOptions; baseManifest: PackageManifest) =
   echo &"  clean:           {opts.clean}"
   echo &"  scrub:           {opts.scrub}"
   echo &"  pruneEmptyDirs:  {opts.pruneEmptyDirs}"
+  echo &"  ensureSSHKeys:   {opts.ensureSshHostKeys}"
   echo &"  force:           {opts.force}"
   echo &"  keepWorkdir:     {opts.keepWorkdir}"
   echo &"  verbose:         {opts.verbose}"

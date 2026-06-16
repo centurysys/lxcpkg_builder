@@ -36,6 +36,7 @@ type
     networkMode*: Option[string]
     preset*: Option[string]
     workDir*: Option[string]
+    ensureSshHostKeys*: bool
     keepWorkdir*: bool
     force*: bool
     verbose*: bool
@@ -306,6 +307,7 @@ proc runBuildTarball*(opts: RawBuildTarballOptions): LxResult[void] =
     networkMode: none(string),
     preset: none(string),
     nonInteractive: true,
+    ensureSshHostKeys: opts.ensureSshHostKeys,
     force: opts.force,
     verbose: opts.verbose,
     keepWorkdir: opts.keepWorkdir

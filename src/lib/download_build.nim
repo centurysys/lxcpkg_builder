@@ -39,6 +39,7 @@ type
     networkMode*: Option[string]
     preset*: Option[string]
     suppressSummary*: bool
+    ensureSshHostKeys*: bool
     force*: bool
     verbose*: bool
     keepWorkdir*: bool
@@ -63,6 +64,7 @@ type
     preset*: Option[string]
     interactive*: bool
     workDir*: Option[string]
+    ensureSshHostKeys*: bool
     keepWorkdir*: bool
     force*: bool
     verbose*: bool
@@ -333,6 +335,7 @@ proc runPackLxcDir*(opts: RawPackLxcDirOptions): LxResult[void] =
     networkMode: none(string),
     preset: none(string),
     nonInteractive: true,
+    ensureSshHostKeys: opts.ensureSshHostKeys,
     force: opts.force,
     verbose: opts.verbose,
     keepWorkdir: opts.keepWorkdir
@@ -433,6 +436,7 @@ proc runBuildDownload*(opts: RawBuildDownloadOptions): LxResult[void] =
     networkMode: opts.networkMode,
     preset: opts.preset,
     suppressSummary: true,
+    ensureSshHostKeys: opts.ensureSshHostKeys,
     force: opts.force,
     verbose: opts.verbose,
     keepWorkdir: opts.keepWorkdir
