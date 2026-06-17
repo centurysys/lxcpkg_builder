@@ -25,8 +25,15 @@ const
     "var/tmp",
     "run",
     "var/run",
-    "var/log",
     "root/.cache"
+  ]
+
+  # Log files should not be part of release packages, but package post-install
+  # scripts often create service-specific log directories that init scripts do
+  # not recreate. Keep the /var/log directory tree while removing regular log
+  # files and symlinks.
+  logCleanupDirs* = [
+    "var/log"
   ]
 
   # Safe language/runtime caches. These are package-manager or bytecode caches
@@ -259,6 +266,33 @@ proc clearDirIfPresent(root, relativePath: string; verbose: bool): LxResult[void
 
   result = runCommand(find.get(), deleteEmptyDirs, verbose)
 
+proc clearDirFilesOnlyIfPresent(root, relativePath: string; verbose: bool): LxResult[void] =
+  let path = checkedPath(root, relativePath)
+  if path.isErr:
+    return LxResult[void].err(path.error())
+
+  if not dirExists(path.get()):
+    return LxResult[void].ok()
+
+  let find = findTool("find")
+  if find.isErr:
+    return LxResult[void].err(find.error())
+
+  # Remove log files and symlinks, but keep directories. Some packages create
+  # service-specific log directories from post-install scripts and their init
+  # scripts do not recreate them. Rebuild cleanup must therefore preserve the
+  # /var/log directory tree even when log files are removed or archived
+  # separately.
+  let deleteFiles = @[
+    path.get(),
+    "-xdev",
+    "-mindepth", "1",
+    "(", "-type", "f", "-o", "-type", "l", ")",
+    "-delete"
+  ]
+
+  result = runCommand(find.get(), deleteFiles, verbose)
+
 proc removePythonBytecodeForDelta(root: string; verbose: bool): LxResult[void] =
   let find = findTool("find")
   if find.isErr:
@@ -372,6 +406,11 @@ proc cleanRootTree(root, emptyMessage, missingMessage: string; verbose: bool): L
 
   for relativePath in genericCleanupDirs:
     let cleaned = clearDirIfPresent(root, relativePath, verbose)
+    if cleaned.isErr:
+      return cleaned
+
+  for relativePath in logCleanupDirs:
+    let cleaned = clearDirFilesOnlyIfPresent(root, relativePath, verbose)
     if cleaned.isErr:
       return cleaned
 
